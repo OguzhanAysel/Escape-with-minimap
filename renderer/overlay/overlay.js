@@ -29,6 +29,9 @@
 
   let leafletMap = null;
   let activeBaseLayer = null;
+  let activeFloorTileLayer = null;
+  let activeFloorName = null;
+  let activeSvgElement = null;
   let calloutLayerGroup = null;
   let looseLayerGroup = null;
   let containerLayerGroup = null;
@@ -156,6 +159,12 @@
       leafletMap.removeLayer(activeBaseLayer);
       activeBaseLayer = null;
     }
+    if (activeFloorTileLayer) {
+      leafletMap.removeLayer(activeFloorTileLayer);
+      activeFloorTileLayer = null;
+    }
+    activeFloorName = null;
+    activeSvgElement = null;
 
     leafletMap.options.crs = buildMapCRS(geoConfig);
     const leafletBounds = L.latLngBounds(window.TarkovGeo.mapBoundsToLeafletBounds(geoConfig.bounds));
@@ -190,6 +199,7 @@
               svgEl.setAttribute('viewBox', parsedSvg.getAttribute('viewBox'));
             }
             svgEl.innerHTML = parsedSvg.innerHTML;
+            activeSvgElement = svgEl;
 
             activeBaseLayer = L.svgOverlay(svgEl, leafletBounds, {
               interactive: false
@@ -281,19 +291,72 @@
     }
   }
 
+  /**
+   * Oyuncunun 3B yüksekliğine (Y) ve bina sınırına göre otomatik kat katmanı değiştirir
+   * (Örn: Dorms 2. Kat / 3. Kat, Reserve D-2 Bunkers, Factory Tunnels / 3. Kat Ofis, Labs 2. Kat vb.)
+   */
+  function updateDynamicFloorLayer(geoConfig, playerPos) {
+    if (!leafletMap || !geoConfig) return;
+    const detectedFloor = playerPos ? window.TarkovGeo.detectActiveFloorLayer(geoConfig, playerPos) : null;
+    const nextFloorName = detectedFloor ? detectedFloor.name : null;
+
+    const baseMapTitle = (currentSettings?.selectedMap || geoConfig.normalizedName || 'customs').toUpperCase();
+    mapBadge.textContent = nextFloorName ? `${baseMapTitle} • ${nextFloorName.toUpperCase()}` : baseMapTitle;
+
+    if (nextFloorName === activeFloorName) return;
+    activeFloorName = nextFloorName;
+
+    if (activeFloorTileLayer) {
+      leafletMap.removeLayer(activeFloorTileLayer);
+      activeFloorTileLayer = null;
+    }
+
+    const leafletBounds = L.latLngBounds(window.TarkovGeo.mapBoundsToLeafletBounds(geoConfig.bounds));
+
+    // Uydu / Tile haritası katmanı varsa üst katman olarak bindir
+    if (detectedFloor && detectedFloor.tilePath && loadedRenderStyle === 'satellite') {
+      activeFloorTileLayer = L.tileLayer(detectedFloor.tilePath, {
+        tileSize: 256,
+        bounds: leafletBounds,
+        minZoom: 0.5,
+        maxZoom: 6.5,
+        maxNativeZoom: geoConfig.maxZoom || 5,
+        zIndex: 5
+      }).addTo(leafletMap);
+    }
+
+    // SVG haritası katmanı varsa ilgili kat grubunu (<g id="Second_Floor"> vb.) öne çıkar
+    if (activeSvgElement && Array.isArray(geoConfig.layers)) {
+      for (const lyr of geoConfig.layers) {
+        if (!lyr.svgLayer) continue;
+        const gEl = activeSvgElement.querySelector(`#${lyr.svgLayer}`);
+        if (gEl) {
+          if (detectedFloor && detectedFloor.svgLayer === lyr.svgLayer) {
+            gEl.style.display = 'inline';
+            gEl.style.opacity = '1';
+          } else {
+            gEl.style.opacity = '0.18';
+          }
+        }
+      }
+    }
+  }
+
   function renderPlayerLayer() {
     if (!leafletMap || !playerLayerGroup) return;
     playerLayerGroup.clearLayers();
 
+    const geoConfig = currentMapPayload?.geoConfig;
     const showPlayer = currentSettings?.overlay?.layers?.player !== false;
     if (!showPlayer || !currentPlayerState || !currentPlayerState.current) {
+      updateDynamicFloorLayer(geoConfig, null);
       renderRouteAndNavigation();
       return;
     }
 
     const cur = currentPlayerState.current;
     const trail = currentPlayerState.trail || [];
-    const geoConfig = currentMapPayload?.geoConfig;
+    updateDynamicFloorLayer(geoConfig, cur.position);
 
     const trailLatLngs = [];
     trail.forEach((pt, idx) => {

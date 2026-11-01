@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('tarkovAPI', {
   // Aşama 5: Görevler & OCR & Görev Eşyalarını Pinleme
   getTasks: () => ipcRenderer.invoke('api:getTasks'),
   toggleTask: (taskId) => ipcRenderer.invoke('tasks:toggleTask', taskId),
+  toggleCompletedTask: (taskId) => ipcRenderer.invoke('tasks:toggleCompletedTask', taskId),
   setActiveTasks: (taskIdsArray) => ipcRenderer.invoke('tasks:setActiveTasks', taskIdsArray),
   clearActiveTasks: () => ipcRenderer.invoke('tasks:clearActiveTasks'),
   toggleObjective: (objectiveId) => ipcRenderer.invoke('tasks:toggleObjective', objectiveId),

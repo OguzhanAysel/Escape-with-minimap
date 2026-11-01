@@ -14,7 +14,35 @@ const MAP_CONFIGS = {
     bounds: [[698, -307], [-372, 237]],
     transform: [0.239, 168.65, 0.239, 136.35],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: '2. Kat',
+        svgLayer: 'Second_Floor',
+        tilePath: 'https://assets.tarkov.dev/maps/customs_0.16/2nd/{z}/{x}/{y}.png',
+        extents: [
+          { height: [2.7, 6.2], bounds: [[[243, 190], [165, 125]], [[116, -83], [72, -170]], [[580, -104], [532, -134]], [[73, 57], [22, -38]]] },
+          { height: [5.5, 100], bounds: [[[-199, -90], [-223, -131]], [[239, 3], [169, -160]], [[584, -46], [556, -92]]] }
+        ]
+      },
+      {
+        name: '3. Kat',
+        svgLayer: 'Third_Floor',
+        tilePath: 'https://assets.tarkov.dev/maps/customs_0.16/3rd/{z}/{x}/{y}.png',
+        extents: [
+          { height: [5.7, 100], bounds: [[[243, 190], [165, 125]]] },
+          { height: [7.7, 11.3], bounds: [[[73, -73], [22, -38]]] }
+        ]
+      },
+      {
+        name: 'Yeraltı / Sığınak',
+        svgLayer: 'Underground_Level',
+        tilePath: 'https://assets.tarkov.dev/maps/customs_0.16/underground/{z}/{x}/{y}.png',
+        extents: [
+          { height: [-1000, 0.4], bounds: [[[635, -137], [620, -125]], [[473, -122], [458, -110]], [[314, -173], [308, -184]], [[219, -158], [193, -137]]] }
+        ]
+      }
+    ]
   },
   'woods': {
     name: 'Woods',
@@ -26,7 +54,8 @@ const MAP_CONFIGS = {
     bounds: [[646, -914], [-761, 442]],
     transform: [0.1855, 112.95, 0.1855, 167.85],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: []
   },
   'interchange': {
     name: 'Interchange',
@@ -38,7 +67,21 @@ const MAP_CONFIGS = {
     bounds: [[598, -442], [-433, 426]],
     transform: [0.265, 150.6, 0.265, 134.6],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: 'AVM 1. Kat (Mağazalar)',
+        svgLayer: 'First_Floor',
+        tilePath: null,
+        extents: [{ height: [25, 34], bounds: [[[120, 218], [-222, -327]]] }]
+      },
+      {
+        name: 'AVM 2. Kat (Üst Kat)',
+        svgLayer: 'Second_Floor',
+        tilePath: null,
+        extents: [{ height: [34, 1000], bounds: [[[120, 218], [-222, -327]]] }]
+      }
+    ]
   },
   'factory': {
     name: 'Factory',
@@ -50,7 +93,27 @@ const MAP_CONFIGS = {
     bounds: [[77, -64.5], [-65.5, 67.4]],
     transform: [1.629, 119.9, 1.629, 139.3],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: '2. Kat (Catwalk)',
+        svgLayer: 'Second_Floor',
+        tilePath: 'https://assets.tarkov.dev/maps/factory/2nd/{z}/{x}/{y}.png',
+        extents: [{ height: [3, 6] }]
+      },
+      {
+        name: '3. Kat (Ofisler)',
+        svgLayer: 'Third_Floor',
+        tilePath: 'https://assets.tarkov.dev/maps/factory/3rd/{z}/{x}/{y}.png',
+        extents: [{ height: [6, 1000] }]
+      },
+      {
+        name: 'Yeraltı Tünelleri',
+        svgLayer: 'Basement',
+        tilePath: 'https://assets.tarkov.dev/maps/factory/tunnels/{z}/{x}/{y}.png',
+        extents: [{ height: [-1000, -1] }]
+      }
+    ]
   },
   'shoreline': {
     name: 'Shoreline',
@@ -62,7 +125,27 @@ const MAP_CONFIGS = {
     bounds: [[504, -415], [-1056, 618]],
     transform: [0.16, 83.2, 0.16, 111.1],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: 'Sanatoryum 2. Kat',
+        svgLayer: 'Second_Floor',
+        tilePath: null,
+        extents: [{ height: [-1, 2], bounds: [[[-100, -40], [-350, -180]]] }]
+      },
+      {
+        name: 'Sanatoryum 3. Kat / Çatı',
+        svgLayer: 'Third_Floor',
+        tilePath: null,
+        extents: [{ height: [2, 1000], bounds: [[[-100, -40], [-350, -180]]] }]
+      },
+      {
+        name: 'Sanatoryum Bodrum',
+        svgLayer: 'Underground_Level',
+        tilePath: null,
+        extents: [{ height: [-1000, -5], bounds: [[[-137, -68], [-268, -163]]] }]
+      }
+    ]
   },
   'reserve': {
     name: 'Reserve',
@@ -74,7 +157,33 @@ const MAP_CONFIGS = {
     bounds: [[289, -293], [-303, 244]],
     transform: [0.395, 122, 0.395, 137.65],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: 'Yeraltı Sığınakları (D-2 / Bunkers)',
+        svgLayer: 'Bunkers',
+        tilePath: 'https://assets.tarkov.dev/maps/reserve/bunkers/{z}/{x}/{y}.png',
+        extents: [{ height: [-1000, -6.5] }]
+      },
+      {
+        name: '2. Kat',
+        svgLayer: null,
+        tilePath: 'https://assets.tarkov.dev/maps/reserve/2nd/{z}/{x}/{y}.png',
+        extents: [
+          { height: [22.1, 25.7], bounds: [[[1, 164], [-17, 199]]] },
+          { height: [-3.5, -0.64], bounds: [[[-77, 26], [-177, 106]], [[-104, -37], [-177, 5]], [[99, -50], [-2, 7]]] }
+        ]
+      },
+      {
+        name: '3. Kat',
+        svgLayer: null,
+        tilePath: 'https://assets.tarkov.dev/maps/reserve/3rd/{z}/{x}/{y}.png',
+        extents: [
+          { height: [25.7, 29.3], bounds: [[[1, 164], [-17, 199]]] },
+          { height: [-0.64, 2.23], bounds: [[[-77, 26], [-177, 106]], [[-104, -37], [-177, 5]], [[99, -50], [-2, 7]]] }
+        ]
+      }
+    ]
   },
   'lighthouse': {
     name: 'Lighthouse',
@@ -86,7 +195,8 @@ const MAP_CONFIGS = {
     bounds: [[515, -998], [-545, 725]],
     transform: [0.2, 0, 0.2, 0],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: []
   },
   'streets-of-tarkov': {
     name: 'Streets of Tarkov',
@@ -98,7 +208,27 @@ const MAP_CONFIGS = {
     bounds: [[323, -295], [-280, 532]],
     transform: [0.38, 0, 0.38, 0],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: '2. Kat',
+        svgLayer: 'Second_Floor',
+        tilePath: null,
+        extents: [{ height: [10, 15] }]
+      },
+      {
+        name: '3. Kat',
+        svgLayer: 'Third_Floor',
+        tilePath: null,
+        extents: [{ height: [15, 20] }]
+      },
+      {
+        name: 'Yeraltı',
+        svgLayer: 'Underground_Level',
+        tilePath: null,
+        extents: [{ height: [-1000, -6] }]
+      }
+    ]
   },
   'ground-zero': {
     name: 'Ground Zero',
@@ -110,7 +240,27 @@ const MAP_CONFIGS = {
     bounds: [[249, -124], [-99, 364]],
     transform: [0.524, 167.3, 0.524, 65.1],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: '2. Kat',
+        svgLayer: 'Second_Floor',
+        tilePath: 'https://assets.tarkov.dev/maps/groundzero/2nd/{z}/{x}/{y}.png',
+        extents: [{ height: [28, 32.3] }]
+      },
+      {
+        name: '3. Kat',
+        svgLayer: 'Third_Floor',
+        tilePath: 'https://assets.tarkov.dev/maps/groundzero/3rd/{z}/{x}/{y}.png',
+        extents: [{ height: [32.3, 1000] }]
+      },
+      {
+        name: 'Yeraltı Otopark / Geçit (Garage)',
+        svgLayer: 'Underground_Level',
+        tilePath: 'https://assets.tarkov.dev/maps/groundzero/garage/{z}/{x}/{y}.png',
+        extents: [{ height: [-1000, 21] }]
+      }
+    ]
   },
   'the-lab': {
     name: 'The Lab',
@@ -122,7 +272,21 @@ const MAP_CONFIGS = {
     bounds: [[-80, -477], [-287, -193]],
     transform: [0.575, 281.2, 0.575, 193.7],
     minZoom: 1,
-    maxZoom: 6
+    maxZoom: 6,
+    layers: [
+      {
+        name: '2. Kat (Üst Ofisler)',
+        svgLayer: null,
+        tilePath: 'https://assets.tarkov.dev/maps/labs_v4/2nd/{z}/{x}/{y}.png',
+        extents: [{ height: [3, 1000] }]
+      },
+      {
+        name: 'Teknik Bodrum Katı (Technical)',
+        svgLayer: null,
+        tilePath: 'https://assets.tarkov.dev/maps/labs_v4/technical/{z}/{x}/{y}.png',
+        extents: [{ height: [-1000, -0.9] }]
+      }
+    ]
   }
 };
 
@@ -315,6 +479,51 @@ function calculateNavigationToTarget(playerPos, playerYawDeg, targetPos) {
   };
 }
 
+/**
+ * Oyuncunun 3B konumuna (X, Y, Z) göre bulunduğu binadaki kat katmanını (2. Kat, 3. Kat, Yeraltı / Sığınak vb.)
+ * tarkov.dev'in resmi kat yükseklik (height) ve bina sınır (bounds) verileriyle tespit eder.
+ */
+function detectActiveFloorLayer(geoConfig, position) {
+  if (!geoConfig || !Array.isArray(geoConfig.layers) || geoConfig.layers.length === 0 || !position) {
+    return null;
+  }
+
+  const px = position.x;
+  const py = position.y ?? 0;
+  const pz = position.z;
+
+  for (const layer of geoConfig.layers) {
+    if (!Array.isArray(layer.extents)) continue;
+    for (const ext of layer.extents) {
+      if (!Array.isArray(ext.height) || ext.height.length < 2) continue;
+      const minY = Math.min(ext.height[0], ext.height[1]);
+      const maxY = Math.max(ext.height[0], ext.height[1]);
+      if (py < minY || py > maxY) continue;
+
+      if (!Array.isArray(ext.bounds) || ext.bounds.length === 0) {
+        return layer;
+      }
+
+      for (const box of ext.bounds) {
+        if (!Array.isArray(box) || box.length < 2) continue;
+        const p1 = box[0];
+        const p2 = box[1];
+        if (!Array.isArray(p1) || !Array.isArray(p2)) continue;
+        const minX = Math.min(p1[0], p2[0]);
+        const maxX = Math.max(p1[0], p2[0]);
+        const minZ = Math.min(p1[1], p2[1]);
+        const maxZ = Math.max(p1[1], p2[1]);
+
+        if (px >= minX && px <= maxX && pz >= minZ && pz <= maxZ) {
+          return layer;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     MAP_CONFIGS,
@@ -322,7 +531,8 @@ if (typeof module !== 'undefined' && module.exports) {
     gamePosToLatLngArray,
     mapBoundsToLeafletBounds,
     rotateLatLng,
-    calculateNavigationToTarget
+    calculateNavigationToTarget,
+    detectActiveFloorLayer
   };
 }
 
@@ -333,6 +543,7 @@ if (typeof window !== 'undefined') {
     gamePosToLatLngArray,
     mapBoundsToLeafletBounds,
     rotateLatLng,
-    calculateNavigationToTarget
+    calculateNavigationToTarget,
+    detectActiveFloorLayer
   };
 }

@@ -113,6 +113,10 @@ function buildGraphQLDataQuery(lang = 'tr', gameMode = 'regular') {
         map { id normalizedName }
         keys { id name shortName iconLink }
       }
+      taskRequirements {
+        task { id name normalizedName }
+        status
+      }
       objectives {
         id
         type
@@ -368,6 +372,11 @@ async function fetchFromOfficialTarkovDevJsonMirror(lang = 'tr', gameMode = 'reg
       return { map: mInfo, keys };
     });
 
+    const taskRequirements = (rawTask.taskRequirements || []).map((req) => ({
+      taskId: typeof req.task === 'string' ? req.task : req.task?.id,
+      status: req.status || ['complete']
+    })).filter((r) => r.taskId);
+
     const objectives = (rawTask.objectives || []).map((obj) => {
       const objMaps = (obj.maps || [])
         .map((mId) => {
@@ -466,6 +475,7 @@ async function fetchFromOfficialTarkovDevJsonMirror(lang = 'tr', gameMode = 'reg
       trader,
       map: taskMap,
       neededKeys,
+      taskRequirements,
       objectives
     });
   }

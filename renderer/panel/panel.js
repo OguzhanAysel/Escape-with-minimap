@@ -2,7 +2,7 @@
   const SHORTCUT_LABELS = {
     toggleOverlay: 'Overlay Göster / Gizle',
     toggleEditMode: 'Düzenleme Modu Aç / Kapat',
-    toggleAutoHome: 'Otomatik HOME Tuşu Aç / Kapat (1 sn)',
+    toggleAutoHome: 'Otomatik HOME Tuşu Aç / Kapat',
     opacityUp: 'Saydamlık Artır',
     opacityDown: 'Saydamlık Azalt',
     toggleFollowMode: 'Takip / Sabit Modu Değiştir',
@@ -11,6 +11,36 @@
     zoomIn: 'Harita Yakınlaştır',
     zoomOut: 'Harita Uzaklaştır'
   };
+
+  const MAP_TR_NAMES = {
+    customs: 'Gümrük',
+    woods: 'Ormanlık',
+    interchange: 'Kavşak',
+    factory: 'Fabrika',
+    'night-factory': 'Fabrika (Gece)',
+    shoreline: 'Sahil',
+    reserve: 'Üs',
+    lighthouse: 'Deniz Feneri',
+    'streets-of-tarkov': 'Tarkov Sokakları',
+    'ground-zero': 'Sıfır Noktası',
+    'ground-zero-21': 'Sıfır Noktası (21+)',
+    'the-lab': 'Laboratuvar'
+  };
+
+  function getTurkishMapName(mapNormOrName) {
+    if (!mapNormOrName) return 'Çoklu Harita';
+    const norm = String(mapNormOrName).toLowerCase().trim().replace(/\s+/g, '-');
+    if (MAP_TR_NAMES[norm]) return MAP_TR_NAMES[norm];
+    for (const [k, v] of Object.entries(MAP_TR_NAMES)) {
+      if (norm.includes(k)) return v;
+    }
+    return mapNormOrName;
+  }
+
+  function isLikelyEnglishText(str) {
+    if (!str) return false;
+    return /\b(eliminate|find|hand over|locate|mark|survive|extract|plant|reach|obtain|kill|scavs|operatives|raid)\b/i.test(str);
+  }
 
   let currentSettings = null;
   let lastShortcutStatus = {};
@@ -21,6 +51,15 @@
   let taskSearchDebounceTimer = null;
   let currentPlayerState = null;
   let candidateTargets = [];
+
+  // Sayfalama & Kaydırma Durumu
+  const PAGE_SIZE = 50;
+  let lootVisibleCount = PAGE_SIZE;
+  let tasksVisibleCount = PAGE_SIZE;
+  const tabScrollPositions = {};
+  const collapsedTaskGroups = new Set();
+  let lastOcrBlob = null;
+  let pendingOcrTaskIds = [];
 
   function normalizeTr(str) {
     if (!str) return '';
@@ -42,27 +81,101 @@
     return `${Math.round(val).toLocaleString('tr-TR')} ₽`;
   }
 
-  // Sekme Geçişleri
+  // TOAST BİLDİRİM SİSTEMİ (Sağ Alt, 3 sn + Geri Al Desteği)
+  const toastContainer = document.getElementById('toast-container');
+
+  function showToast(message, type = 'info', undoCallback = null) {
+    if (!toastContainer) return;
+    const item = document.createElement('div');
+    const typeClass =
+      type === 'ok' ? 'toast-ok' : type === 'warn' ? 'toast-warn' : type === 'danger' ? 'toast-danger' : '';
+    item.className = `toast-item ${typeClass}`;
+
+    const textSpan = document.createElement('span');
+    textSpan.textContent = message;
+    item.appendChild(textSpan);
+
+    if (typeof undoCallback === 'function') {
+      const undoBtn = document.createElement('button');
+      undoBtn.type = 'button';
+      undoBtn.className = 'btn btn-secondary';
+      undoBtn.textContent = 'Geri al';
+      undoBtn.addEventListener('click', () => {
+        undoCallback();
+        item.remove();
+      });
+      item.appendChild(undoBtn);
+    }
+
+    toastContainer.appendChild(item);
+    setTimeout(() => {
+      if (item.parentNode) item.remove();
+    }, 3500);
+  }
+
+  // SEKME GEÇİŞLERİ (Kaydırma Konumunu Hatırlar)
+  const mainScrollArea = document.getElementById('main-scroll-area');
+  let currentActiveTabId = 'tab-loot';
+
   document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
+      const nextTabId = btn.dataset.tab;
+      if (!nextTabId || nextTabId === currentActiveTabId) return;
+
+      if (mainScrollArea) {
+        tabScrollPositions[currentActiveTabId] = mainScrollArea.scrollTop;
+      }
+
       document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
       document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
+
       btn.classList.add('active');
-      const target = document.getElementById(btn.dataset.tab);
+      const target = document.getElementById(nextTabId);
       if (target) target.classList.add('active');
+      currentActiveTabId = nextTabId;
+
+      if (mainScrollArea) {
+        mainScrollArea.scrollTop = tabScrollPositions[nextTabId] || 0;
+      }
     });
   });
 
+  // AKORDEON KONTROLLERİ (Katmanlar & Gelişmiş)
+  function setupAccordion(btnId, panelId) {
+    const btn = document.getElementById(btnId);
+    const panel = document.getElementById(panelId);
+    if (!btn || !panel) return;
+    btn.addEventListener('click', () => {
+      const expanded = btn.getAttribute('aria-expanded') === 'true';
+      btn.setAttribute('aria-expanded', String(!expanded));
+      panel.hidden = expanded;
+    });
+  }
+
+  setupAccordion('btn-acc-layers', 'panel-acc-layers');
+  setupAccordion('btn-acc-advanced', 'panel-acc-advanced');
+
   // DOM Referansları
   const ovStatusPill = document.getElementById('ov-status-pill');
+  const ovStatusDot = document.getElementById('ov-status-dot');
+  const rowToggleVisible = document.getElementById('row-toggle-visible');
   const btnToggleVisible = document.getElementById('btn-toggle-visible');
   const btnToggleEdit = document.getElementById('btn-toggle-edit');
+  const rowToggleAutoHome = document.getElementById('row-toggle-autohome');
   const btnToggleAutoHome = document.getElementById('btn-toggle-autohome');
+  const autoHomeStatusDot = document.getElementById('autohome-status-dot');
+  const autoHomeSubLabel = document.getElementById('autohome-sub-label');
+
   const selectGamemodeQuick = document.getElementById('select-gamemode-quick');
+  const segGamemodeButtons = document.querySelectorAll('.seg-btn[data-gamemode]');
   const selectMap = document.getElementById('select-map');
   const selectMapStyle = document.getElementById('select-map-style');
   const rangeOpacity = document.getElementById('range-opacity');
   const lblOpacity = document.getElementById('lbl-opacity');
+
+  const lblLayersCount = document.getElementById('lbl-layers-count');
+  const btnLayersAllOn = document.getElementById('btn-layers-all-on');
+  const btnLayersAllOff = document.getElementById('btn-layers-all-off');
 
   const chkShowCallouts = document.getElementById('chk-show-callouts');
   const chkLayerLoot = document.getElementById('chk-layer-loot');
@@ -76,18 +189,24 @@
   const chkFollowMode = document.getElementById('chk-follow-mode');
   const chkHoverInteractive = document.getElementById('chk-hover-interactive');
 
+  const navBadgePins = document.getElementById('nav-badge-pins');
+  const navBadgeTasks = document.getElementById('nav-badge-tasks');
+
   // Eşya Arama DOM
   const apiStatusBadge = document.getElementById('api-status-badge');
   const btnRefreshApi = document.getElementById('btn-refresh-api');
   const pinnedItemsContainer = document.getElementById('pinned-items-container');
   const btnClearPins = document.getElementById('btn-clear-pins');
   const inputLootSearch = document.getElementById('input-loot-search');
+  const btnClearLootSearch = document.getElementById('btn-clear-loot-search');
   const selectLootSort = document.getElementById('select-loot-sort');
   const chkOnlyWithSpawns = document.getElementById('chk-only-with-spawns');
   const lootResultsInfo = document.getElementById('loot-results-info');
   const lootResultsGrid = document.getElementById('loot-results-grid');
+  const lootLoadMoreWrap = document.getElementById('loot-load-more-wrap');
+  const btnLootLoadMore = document.getElementById('btn-loot-load-more');
 
-  // Aşama 3 & 4: Oyuncu Konum, Oto-Home & Rota DOM
+  // Konum, Oto-Home & Rota DOM
   const plAutoHomeStatus = document.getElementById('pl-autohome-status');
   const plLastUpdate = document.getElementById('pl-last-update');
   const plCoords = document.getElementById('pl-coords');
@@ -99,20 +218,31 @@
   const rangeYawOffsetQuick = document.getElementById('range-yaw-offset-quick');
   const lblYawOffsetQuick = document.getElementById('lbl-yaw-offset-quick');
 
-  // Aşama 5: Görevler & OCR DOM
+  // Görevler & OCR DOM
   const btnClearActiveTasks = document.getElementById('btn-clear-active-tasks');
   const ocrDropzone = document.getElementById('ocr-dropzone');
   const inputOcrFile = document.getElementById('input-ocr-file');
   const btnOcrBrowse = document.getElementById('btn-ocr-browse');
+  const btnOcrRetry = document.getElementById('btn-ocr-retry');
+  const ocrProgressWrap = document.getElementById('ocr-progress-wrap');
+  const ocrProgressFill = document.getElementById('ocr-progress-fill');
+  const ocrProgressPct = document.getElementById('ocr-progress-pct');
   const ocrStatusBox = document.getElementById('ocr-status-box');
+  const ocrPreviewBar = document.getElementById('ocr-preview-bar');
+  const ocrPreviewSummary = document.getElementById('ocr-preview-summary');
+  const btnOcrConfirmAll = document.getElementById('btn-ocr-confirm-all');
+  const btnOcrDismiss = document.getElementById('btn-ocr-dismiss');
   const ocrMatchesList = document.getElementById('ocr-matches-list');
   const btnPinAllTaskItems = document.getElementById('btn-pin-all-task-items');
   const taskRequiredItemsBox = document.getElementById('task-required-items-box');
   const inputTaskSearch = document.getElementById('input-task-search');
+  const btnClearTaskSearch = document.getElementById('btn-clear-task-search');
   const selectTaskTrader = document.getElementById('select-task-trader');
   const selectTaskFilter = document.getElementById('select-task-filter');
   const tasksCountInfo = document.getElementById('tasks-count-info');
   const tasksListContainer = document.getElementById('tasks-list-container');
+  const tasksLoadMoreWrap = document.getElementById('tasks-load-more-wrap');
+  const btnTasksLoadMore = document.getElementById('btn-tasks-load-more');
 
   const rtTargetName = document.getElementById('rt-target-name');
   const rtDistance = document.getElementById('rt-distance');
@@ -149,23 +279,44 @@
   const logsContainer = document.getElementById('logs-container');
   const btnClearLogs = document.getElementById('btn-clear-logs');
 
+  function updateLayersSummaryBadge() {
+    const checkboxes = [
+      chkLayerTasks,
+      chkShowAllTasks,
+      chkLayerLoot,
+      chkShowExtracts,
+      chkShowContainers,
+      chkShowCallouts,
+      chkLayerPlayer,
+      chkLayerRoute
+    ].filter(Boolean);
+    const activeCount = checkboxes.filter((c) => c.checked).length;
+    if (lblLayersCount) {
+      lblLayersCount.textContent = `${activeCount}/${checkboxes.length} açık`;
+    }
+  }
+
   function renderAutoHomeUI(st) {
     if (!st) return;
     const sec = ((st.intervalMs || 1000) / 1000).toFixed(1).replace('.0', '');
-    if (st.active) {
-      btnToggleAutoHome.textContent = `Oto-Home (Alt+H): AÇIK (${sec} sn)`;
-      btnToggleAutoHome.className = 'btn btn-warning active';
-      plAutoHomeStatus.textContent = `AÇIK (Her ${sec} sn'de bir HOME basılıyor)`;
-      plAutoHomeStatus.style.color = '#86efac';
-    } else {
-      btnToggleAutoHome.textContent = `Oto-Home (Alt+H): KAPALI (${sec} sn)`;
-      btnToggleAutoHome.className = 'btn btn-secondary';
-      plAutoHomeStatus.textContent = 'KAPALI (Alt+H ile başlatın)';
-      plAutoHomeStatus.style.color = '#94a3b8';
+    const isActive = !!st.active;
+    if (btnToggleAutoHome) {
+      btnToggleAutoHome.setAttribute('aria-checked', String(isActive));
+    }
+    if (autoHomeStatusDot) {
+      autoHomeStatusDot.className = `status-dot ${isActive ? 'status-on' : 'status-off'}`;
+    }
+    if (autoHomeSubLabel) {
+      autoHomeSubLabel.innerHTML = `${isActive ? `Açık (${sec} sn)` : `Kapalı (${sec} sn)`} · <kbd>Alt+H</kbd>`;
+    }
+    if (plAutoHomeStatus) {
+      plAutoHomeStatus.textContent = isActive ? `Açık (Her ${sec} sn)` : 'Kapalı (Alt+H ile başlatın)';
+      plAutoHomeStatus.style.color = isActive ? 'var(--ok)' : 'var(--text-2)';
     }
   }
 
   function renderTargetSelectDropdown() {
+    if (!selectTargetManual) return;
     const activeId = currentPlayerState?.activeTarget?.id || '';
     selectTargetManual.innerHTML = `<option value="">-- Hedef Seçin (${candidateTargets.length} nokta mevcut) --</option>`;
     for (const c of candidateTargets) {
@@ -186,10 +337,10 @@
       rtTargetName.textContent = target.title;
       if (nav) {
         rtDistance.textContent = `${nav.horizontalDistance} metre`;
-        rtRelativeDir.textContent = `${nav.relativeText} (Hedef Açısı: ${nav.targetBearing}°)`;
+        rtRelativeDir.textContent = `${nav.relativeText} (${nav.targetBearing}°)`;
         rtElevation.textContent = nav.elevationText;
       } else {
-        rtDistance.textContent = 'Oyuncu konumu bekleniyor';
+        rtDistance.textContent = 'Konum bekleniyor';
         rtRelativeDir.textContent = '-';
         rtElevation.textContent = `Hedef Y: ${target.position.y.toFixed(1)}m`;
       }
@@ -210,16 +361,21 @@
     const cur = currentPlayerState.current;
     const diffSec = Math.max(0, Math.floor((Date.now() - (cur.timestamp || Date.now())) / 1000));
     plLastUpdate.textContent = `${diffSec} sn önce (${new Date(cur.timestamp).toLocaleTimeString()})`;
-    plCoords.textContent = `X: ${cur.position.x.toFixed(1)} | Y: ${cur.position.y.toFixed(1)}m | Z: ${cur.position.z.toFixed(1)}`;
-    plYaw.textContent = `${cur.yaw}° (${cur.compass}) — İz: ${(currentPlayerState.trail || []).length}/10`;
+    plCoords.textContent = `X:${cur.position.x.toFixed(1)} Y:${cur.position.y.toFixed(1)}m Z:${cur.position.z.toFixed(1)}`;
+    plYaw.textContent = `${cur.yaw}° (${cur.compass}) · İz: ${(currentPlayerState.trail || []).length}/10`;
   }
 
   setInterval(renderPlayerStatusCard, 1000);
 
   function renderPinnedItemsBar() {
     const pinned = (currentSettings && currentSettings.pinnedItems) || [];
+    if (navBadgePins) {
+      navBadgePins.textContent = String(pinned.length);
+      navBadgePins.className = `chip tabular-nums ${pinned.length > 0 ? 'chip-accent' : 'chip-neutral'}`;
+    }
+
     if (pinned.length === 0) {
-      pinnedItemsContainer.innerHTML = `<span class="muted small">Henüz eşya seçilmedi. Aşağıdaki kartlardan "Haritada Pinle" butonuna tıklayın.</span>`;
+      pinnedItemsContainer.innerHTML = `<span class="muted">Henüz eşya sabitlenmedi. Aşağıdaki kartlardan "Haritaya sabitle" butonuna tıklayın.</span>`;
       return;
     }
 
@@ -230,7 +386,7 @@
       chip.innerHTML = `
         <span class="pin-chip-dot" style="background:${p.color}"></span>
         <span>${p.name} <small class="muted">(${p.shortName || ''})</small></span>
-        <button class="pin-chip-remove" title="Pini Kaldır">✕</button>
+        <button type="button" class="pin-chip-remove" aria-label="${p.name} sabitlemesini kaldır" title="Kaldır">✕</button>
       `;
       chip.querySelector('.pin-chip-remove').addEventListener('click', () => {
         window.tarkovAPI.togglePinItem(p);
@@ -241,17 +397,21 @@
 
   function renderLootResults() {
     if (!allItems || allItems.length === 0) {
-      lootResultsInfo.textContent = 'Eşya verisi henüz yüklenmedi...';
+      lootResultsInfo.textContent = 'Yükleniyor...';
       lootResultsGrid.innerHTML = '';
+      if (lootLoadMoreWrap) lootLoadMoreWrap.hidden = true;
       return;
     }
 
     const q = normalizeTr(inputLootSearch.value);
+    if (btnClearLootSearch) btnClearLootSearch.hidden = !inputLootSearch.value;
+
     const onlyWithSpawns = chkOnlyWithSpawns.checked;
     const sortBy = selectLootSort.value;
     const activeMap = (currentSettings && currentSettings.selectedMap) || 'customs';
-    const modeLabel = (currentSettings && currentSettings.gameMode) === 'pve' ? 'PvE Zone' : 'PvP Regular';
-    const pinnedIds = new Set(((currentSettings && currentSettings.pinnedItems) || []).map((x) => x.id));
+    const modeLabel = (currentSettings && currentSettings.gameMode) === 'pve' ? 'PvE' : 'PvP';
+    const pinnedList = (currentSettings && currentSettings.pinnedItems) || [];
+    const pinnedIds = new Set(pinnedList.map((x) => x.id));
 
     let filtered = allItems.filter((item) => {
       if (onlyWithSpawns && (!item.mapSpawnsSummary || item.mapSpawnsSummary.length === 0)) {
@@ -274,14 +434,21 @@
     });
 
     const totalMatches = filtered.length;
-    const shown = filtered.slice(0, 60);
+    const shown = filtered.slice(0, lootVisibleCount);
 
-    lootResultsInfo.textContent = `[${modeLabel}] Toplam ${totalMatches.toLocaleString('tr-TR')} eşya bulundu (İlk ${shown.length} gösteriliyor). Aktif harita: ${activeMap.toUpperCase()}`;
+    lootResultsInfo.textContent = `${totalMatches.toLocaleString('tr-TR')} eşya · ${pinnedIds.size} sabitli`;
     lootResultsGrid.innerHTML = '';
+
+    if (lootLoadMoreWrap) {
+      const remaining = totalMatches - shown.length;
+      lootLoadMoreWrap.hidden = remaining <= 0;
+      if (btnLootLoadMore && remaining > 0) {
+        btnLootLoadMore.textContent = `Daha fazla göster (+${Math.min(PAGE_SIZE, remaining)} / Kalan: ${remaining})`;
+      }
+    }
 
     for (const item of shown) {
       const isPinned = pinnedIds.has(item.id);
-      const pinEntry = ((currentSettings && currentSettings.pinnedItems) || []).find((x) => x.id === item.id);
       const card = document.createElement('div');
       card.className = 'item-card' + (isPinned ? ' pinned' : '');
 
@@ -289,36 +456,37 @@
       const traderBetter = item.bestTrader.priceRUB > 0 && item.bestTrader.priceRUB > item.fleaPrice;
 
       const avgSub = item.fleaAvg24hPrice
-        ? `<div class="muted" style="font-size:10px">24s Ort: ${formatRub(item.fleaAvg24hPrice)}</div>`
+        ? `<div class="muted" style="font-size:var(--fs-xs)">24s Ort: ${formatRub(item.fleaAvg24hPrice)}</div>`
         : '';
 
       const mapPillsHtml = (item.mapSpawnsSummary && item.mapSpawnsSummary.length > 0)
         ? item.mapSpawnsSummary
             .map((ms) => {
               const isCurrent = ms.mapNormalizedName === activeMap;
-              return `<span class="map-spawn-pill ${isCurrent ? 'active-map' : ''}" data-map="${ms.mapNormalizedName}" title="Bu haritaya geç: ${ms.mapName} (${ms.looseCount} açıkta spawn, ${ms.containerCount} konteyner)">
-                ${ms.mapName}: <strong>${ms.looseCount}</strong> spawn
-              </span>`;
+              const trMap = getTurkishMapName(ms.mapNormalizedName || ms.mapName);
+              return `<button type="button" class="map-spawn-pill tabular-nums ${isCurrent ? 'active-map' : ''}" data-map="${ms.mapNormalizedName}" title="${trMap} haritasına geç (${ms.looseCount} açıkta spawn)">
+                ${trMap}: <strong>${ms.looseCount}</strong>
+              </button>`;
             })
             .join('')
-        : `<span class="muted small">Açıkta (loose) spawn kaydı yok — konteynerlerden çıkabilir</span>`;
+        : `<span class="muted">Açıkta spawn kaydı yok — konteynerlerden çıkabilir</span>`;
 
       card.innerHTML = `
         <div class="item-card-top">
           <img class="item-icon" src="${item.iconLink || ''}" alt="" loading="lazy" />
           <div class="item-title-box">
             <div class="item-name" title="${item.name}">${item.name}</div>
-            <div class="item-meta">Kısa: <strong>${item.shortName || '-'}</strong> • Boyut: ${item.width}x${item.height} (${item.slots} slot)</div>
-            <div class="item-meta">En İyi Satış (${modeLabel}): <strong style="color:#86efac">${item.bestOverallSource}</strong></div>
+            <div class="item-meta">Kısa: <strong>${item.shortName || '-'}</strong> · ${item.width}×${item.height} (${item.slots} slot)</div>
+            <div class="item-meta">En İyi Satış (${modeLabel}): <strong style="color:var(--ok)">${item.bestOverallSource}</strong></div>
           </div>
-          <button class="btn btn-sm ${isPinned ? 'btn-warning active' : 'btn-primary'} btn-pin-toggle">
-            ${isPinned ? `✓ Pinli` : '+ Haritada Pinle'}
+          <button type="button" class="btn ${isPinned ? 'btn-secondary' : 'btn-ghost'} btn-pin-toggle">
+            ${isPinned ? 'Sabitlendi ✓' : 'Haritaya sabitle'}
           </button>
         </div>
 
-        <div class="item-prices-grid">
+        <div class="item-prices-grid tabular-nums">
           <div class="price-box ${fleaBetter ? 'best-choice' : ''}">
-            <span class="price-label">Flea (Anlık En Düşük) ${fleaBetter ? '★' : ''}</span>
+            <span class="price-label">Flea Market ${fleaBetter ? '★' : ''}</span>
             <span class="price-val">${formatRub(item.fleaPrice)}</span>
             ${avgSub}
           </div>
@@ -328,7 +496,7 @@
           </div>
           <div class="price-box">
             <span class="price-label">Slot Başı Değer</span>
-            <span class="price-val slot-badge">${formatRub(item.pricePerSlot)}/slot</span>
+            <span class="price-val" style="color:var(--accent)">${formatRub(item.pricePerSlot)}</span>
           </div>
         </div>
 
@@ -337,10 +505,6 @@
         </div>
       `;
 
-      if (isPinned && pinEntry) {
-        card.style.borderColor = pinEntry.color;
-      }
-
       card.querySelector('.btn-pin-toggle').addEventListener('click', () => {
         window.tarkovAPI.togglePinItem({
           id: item.id,
@@ -348,6 +512,7 @@
           shortName: item.shortName,
           iconLink: item.iconLink
         });
+        showToast(isPinned ? `"${item.shortName || item.name}" haritadan kaldırıldı` : `"${item.shortName || item.name}" haritaya sabitlendi`, 'ok');
       });
 
       card.querySelectorAll('.map-spawn-pill[data-map]').forEach((pill) => {
@@ -355,6 +520,7 @@
           const targetMap = pill.dataset.map;
           if (targetMap) {
             window.tarkovAPI.updateSettings({ selectedMap: targetMap });
+            showToast(`Aktif harita: ${getTurkishMapName(targetMap)}`, 'info');
           }
         });
       });
@@ -364,12 +530,13 @@
   }
 
   async function fetchAndPrepareItems(forceRefresh = false) {
-    apiStatusBadge.textContent = forceRefresh ? 'API Yenileniyor...' : 'Yükleniyor...';
-    apiStatusBadge.className = 'pill pill-gray';
+    apiStatusBadge.textContent = forceRefresh ? 'Yenileniyor...' : 'Yükleniyor...';
+    apiStatusBadge.className = 'chip chip-neutral';
 
     const loadRes = await window.tarkovAPI.loadApiData({ forceRefresh });
     if (!loadRes || !loadRes.ok) {
-      apiStatusBadge.textContent = 'Hata / Çevrimdışı';
+      apiStatusBadge.textContent = 'Çevrimdışı / Hata';
+      apiStatusBadge.className = 'chip chip-danger';
       lootResultsInfo.textContent = `Veri yüklenemedi: ${loadRes?.error || 'Bilinmeyen hata'}`;
       return;
     }
@@ -402,15 +569,14 @@
         _normShort: normalizeTr(it.shortName)
       }));
 
-      const timeStr = loadRes.updatedAt ? new Date(loadRes.updatedAt).toLocaleTimeString() : '';
       const modeTag = (loadRes.gameMode || currentSettings?.gameMode) === 'pve' ? 'PvE' : 'PvP';
-      apiStatusBadge.textContent = `${modeTag} • ${loadRes.fromCache ? 'Önbellek' : 'Canlı API'} (${allItems.length} Eşya • ${timeStr})`;
-      apiStatusBadge.className = 'pill pill-green';
+      apiStatusBadge.textContent = `${modeTag} · ${allItems.length} eşya`;
+      apiStatusBadge.className = 'chip chip-ok tabular-nums';
       renderLootResults();
     }
   }
 
-  // AŞAMA 5: Görevleri Harita Bazında Gruplama, Gerekli Eşyalar Özeti ve OCR Eşleştirme
+  // GÖREV YÖNETİMİ VE HARİTA GRUPLAMA
   function doesTaskBelongToMap(task, mapNorm) {
     if (!task) return false;
     if (task.map?.normalizedName === mapNorm) return true;
@@ -432,6 +598,21 @@
     return false;
   }
 
+  function getTaskPrimaryMapKey(task, activeMap) {
+    if (doesTaskBelongToMap(task, activeMap)) return activeMap;
+    if (task.map?.normalizedName) {
+      if (task.map.normalizedName.startsWith('ground-zero')) return 'ground-zero';
+      if (task.map.normalizedName.includes('factory')) return 'factory';
+      return task.map.normalizedName;
+    }
+    for (const obj of task.objectives || []) {
+      if (obj.maps && obj.maps.length === 1 && obj.maps[0].normalizedName) {
+        return obj.maps[0].normalizedName;
+      }
+    }
+    return 'any';
+  }
+
   function getObjectivePositionOnMap(obj, task, mapNorm) {
     for (const z of obj.zones || []) {
       const zm = z.map?.normalizedName || task.map?.normalizedName;
@@ -450,29 +631,260 @@
     return null;
   }
 
+  function buildTaskCardElement(task, context) {
+    const { activeMap, activeSet, completedTaskSet, completedObjSet, pinnedSet } = context;
+    const isSelected = activeSet.has(task.id);
+    const isTaskCompleted = completedTaskSet.has(task.id);
+    const onCurrentMap = doesTaskBelongToMap(task, activeMap);
+
+    const card = document.createElement('div');
+    card.className = `task-card ${isSelected ? 'active-task' : ''} ${isTaskCompleted ? 'completed-task' : ''}`;
+
+    const mapNormKey = task.map?.normalizedName || (onCurrentMap ? activeMap : '');
+    const mapTagTr = mapNormKey ? getTurkishMapName(mapNormKey) : 'Çoklu Harita';
+    const hasEnglishObj = (task.objectives || []).some((o) => isLikelyEnglishText(o.description));
+
+    // Göreve ait tüm Anahtarlar + İstenen Eşyalar + Özel Görev Eşyaları + İşaretleyiciler
+    const detailedReqs = [];
+    const seenReqIds = new Set();
+
+    for (const nk of task.neededKeys || []) {
+      for (const k of nk.keys || []) {
+        if (k && !seenReqIds.has(`key_${k.id}`)) {
+          seenReqIds.add(`key_${k.id}`);
+          detailedReqs.push({ item: k, badge: 'Anahtar', chipClass: 'chip-neutral', count: 1, canPin: true });
+        }
+      }
+    }
+
+    for (const obj of task.objectives || []) {
+      for (const kGroup of obj.requiredKeys || []) {
+        for (const k of kGroup || []) {
+          if (k && !seenReqIds.has(`key_${k.id}`)) {
+            seenReqIds.add(`key_${k.id}`);
+            detailedReqs.push({ item: k, badge: 'Anahtar', chipClass: 'chip-neutral', count: 1, canPin: true });
+          }
+        }
+      }
+      if (obj.markerItem && !seenReqIds.has(`mark_${obj.markerItem.id}_${obj.id}`)) {
+        seenReqIds.add(`mark_${obj.markerItem.id}_${obj.id}`);
+        detailedReqs.push({
+          item: obj.markerItem,
+          badge: 'İşaretleyici',
+          chipClass: 'chip-quest',
+          count: obj.count || 1,
+          canPin: true
+        });
+      }
+      if (obj.questItem && !seenReqIds.has(`qitem_${obj.questItem.id}`)) {
+        seenReqIds.add(`qitem_${obj.questItem.id}`);
+        detailedReqs.push({
+          item: obj.questItem,
+          badge: 'Özel Görev Eşyası',
+          chipClass: 'chip-quest',
+          count: obj.count || 1,
+          canPin: false
+        });
+      }
+      if (obj.items && obj.items.length > 0 && (obj.type === 'giveItem' || obj.type === 'findItem' || obj.type === 'plantItem')) {
+        const it = obj.items[0];
+        const rKey = `item_${it.id}_${obj.type}`;
+        if (!seenReqIds.has(rKey)) {
+          seenReqIds.add(rKey);
+          const label =
+            obj.type === 'plantItem'
+              ? 'Yerleştir'
+              : obj.foundInRaid
+                ? 'FIR Eşya'
+                : 'Teslim Et';
+          detailedReqs.push({
+            item: it,
+            badge: label,
+            chipClass: obj.foundInRaid ? 'chip-warn' : 'chip-ok',
+            count: obj.count || 1,
+            canPin: true
+          });
+        }
+      }
+    }
+
+    card.innerHTML = `
+      <div class="task-card-header">
+        <div class="task-title-wrap">
+          <div class="task-title-line">
+            <span class="task-name">${task.name}</span>
+            ${isSelected ? '<span class="chip chip-accent">✓ Seçildi</span>' : ''}
+            ${isTaskCompleted ? '<span class="chip chip-ok">✓ Yapıldı</span>' : ''}
+          </div>
+          <div class="task-chips-row">
+            <span class="chip chip-neutral">${task.trader?.name || 'Trader'}</span>
+            <span class="chip ${onCurrentMap ? 'chip-accent' : 'chip-neutral'}">${mapTagTr}</span>
+            <span class="chip chip-neutral tabular-nums">Min. Seviye ${task.minPlayerLevel || 1}</span>
+            ${hasEnglishObj ? '<span class="chip chip-neutral" title="Veri kaynağında bu görevin hedefleri İngilizce yer alıyor">EN</span>' : ''}
+          </div>
+        </div>
+        <div class="task-card-actions">
+          <button type="button" class="btn btn-ghost btn-task-complete-toggle" title="Görevi tamamlandı olarak işaretle / geri al">
+            ${isTaskCompleted ? '✓ Yapıldı' : 'Yapıldı'}
+          </button>
+          <button type="button" class="btn ${isSelected ? 'btn-secondary' : 'btn-ghost'} btn-task-toggle">
+            ${isSelected ? 'Kaldır' : 'Seç ＋'}
+          </button>
+        </div>
+      </div>
+      <div class="task-reqs-holder"></div>
+      <div class="task-obj-list"></div>
+    `;
+
+    card.querySelector('.btn-task-toggle').addEventListener('click', () => {
+      window.tarkovAPI.toggleTask(task.id);
+      showToast(
+        isSelected
+          ? `"${task.name}" seçili görevlerden kaldırıldı`
+          : `"${task.name}" seçildi (Önkoşul görevleri otomatik ✓ Yapıldı işaretlendi)`,
+        'ok'
+      );
+    });
+
+    card.querySelector('.btn-task-complete-toggle').addEventListener('click', () => {
+      window.tarkovAPI.toggleCompletedTask(task.id);
+    });
+
+    const reqsHolder = card.querySelector('.task-reqs-holder');
+    if (detailedReqs.length > 0) {
+      const detailBox = document.createElement('div');
+      detailBox.className = 'task-items-detail-box';
+      for (const dr of detailedReqs) {
+        const isPinned = pinnedSet.has(dr.item.id);
+        const rRow = document.createElement('div');
+        rRow.className = 'task-detail-row';
+        rRow.innerHTML = `
+          <div class="task-detail-left">
+            <img src="${dr.item.iconLink || ''}" alt="" loading="lazy" />
+            <div>
+              <span class="chip ${dr.chipClass}">${dr.badge}</span>
+              <strong>${dr.item.name}</strong>
+              ${dr.item.shortName ? `<span class="muted">(${dr.item.shortName})</span>` : ''}
+              <strong class="tabular-nums">×${dr.count}</strong>
+            </div>
+          </div>
+          ${
+            dr.canPin
+              ? `<button type="button" class="btn ${isPinned ? 'btn-secondary' : 'btn-ghost'} btn-dr-pin">${isPinned ? 'Sabitlendi ✓' : 'Haritaya sabitle'}</button>`
+              : ''
+          }
+        `;
+        const pinBtn = rRow.querySelector('.btn-dr-pin');
+        if (pinBtn) {
+          pinBtn.addEventListener('click', () => {
+            window.tarkovAPI.togglePinItem(dr.item);
+            showToast(`"${dr.item.shortName || dr.item.name}" haritaya sabitlendi`, 'ok');
+          });
+        }
+        detailBox.appendChild(rRow);
+      }
+      reqsHolder.appendChild(detailBox);
+    }
+
+    const objListEl = card.querySelector('.task-obj-list');
+    for (const obj of task.objectives || []) {
+      const isDone = isTaskCompleted || completedObjSet.has(obj.id);
+      const pos = getObjectivePositionOnMap(obj, task, activeMap);
+      const row = document.createElement('div');
+      row.className = `task-obj-row ${isDone ? 'completed' : ''}`;
+
+      const firBadge = obj.foundInRaid ? `<span class="chip chip-warn tabular-nums">FIR ×${obj.count || 1}</span> ` : '';
+      const locHtml = pos
+        ? `<button type="button" class="btn btn-secondary btn-obj-route tabular-nums" title="Bu hedefe rota çiz">Rota Yap (${pos.y.toFixed(0)}m)</button>`
+        : `<span class="chip chip-neutral" aria-label="Bu hedef için harita konumu bulunmuyor">Konum yok</span>`;
+
+      row.innerHTML = `
+        <label class="task-obj-label">
+          <input type="checkbox" class="chk-obj-done" ${isDone ? 'checked' : ''} />
+          <span>${firBadge}${obj.description || obj.type}</span>
+        </label>
+        ${locHtml}
+      `;
+
+      row.querySelector('.chk-obj-done').addEventListener('change', () => {
+        window.tarkovAPI.toggleObjective(obj.id);
+      });
+
+      const routeBtn = row.querySelector('.btn-obj-route');
+      if (routeBtn && pos) {
+        routeBtn.addEventListener('click', () => {
+          window.tarkovAPI.setTarget({
+            id: `task_${task.id}_${obj.id}_0`,
+            title: `Görev: ${task.name}`,
+            subtitle: obj.description || task.trader?.name,
+            category: 'task',
+            color: '#b57bee',
+            position: pos
+          });
+          showToast(`Rota hedefi ayarlandı: ${task.name}`, 'ok');
+        });
+      }
+
+      objListEl.appendChild(row);
+    }
+
+    return card;
+  }
+
   function renderTasksSection() {
     if (!tasksListContainer) return;
     const activeMap = (currentSettings && currentSettings.selectedMap) || 'customs';
     const activeSet = new Set((currentSettings && currentSettings.activeTaskIds) || []);
+    const completedTaskSet = new Set((currentSettings && currentSettings.completedTaskIds) || []);
     const completedObjSet = new Set((currentSettings && currentSettings.completedObjectiveIds) || []);
+    const pinnedSet = new Set(((currentSettings && currentSettings.pinnedItems) || []).map((x) => x.id));
     const q = normalizeTr(inputTaskSearch ? inputTaskSearch.value : '');
+    if (btnClearTaskSearch && inputTaskSearch) {
+      btnClearTaskSearch.hidden = !inputTaskSearch.value;
+    }
+
     const traderFilter = selectTaskTrader ? selectTaskTrader.value : 'all';
     const modeFilter = selectTaskFilter ? selectTaskFilter.value : 'map_first';
 
-    // 1) Gerekli Eşyalar ve Anahtarlar Özeti
+    if (navBadgeTasks) {
+      navBadgeTasks.textContent = String(activeSet.size);
+      navBadgeTasks.className = `chip tabular-nums ${activeSet.size > 0 ? 'chip-accent' : 'chip-neutral'}`;
+    }
+
+    // 1) Gerekli Eşyalar ve Anahtarlar Paneli
     const reqItemsMap = new Map();
-    const activeTasksObjects = allTasks.filter((t) => activeSet.has(t.id));
+    const activeTasksObjects = allTasks.filter((t) => activeSet.has(t.id) && !completedTaskSet.has(t.id));
 
     for (const t of activeTasksObjects) {
       for (const nk of t.neededKeys || []) {
         for (const k of nk.keys || []) {
           if (!reqItemsMap.has(k.id)) {
-            reqItemsMap.set(k.id, { ...k, count: 1, fir: false, isKey: true, taskNames: [t.name] });
+            reqItemsMap.set(k.id, { ...k, count: 1, fir: false, role: 'Anahtar', taskNames: [t.name] });
           }
         }
       }
       for (const obj of t.objectives || []) {
         if (completedObjSet.has(obj.id)) continue;
+
+        for (const kGroup of obj.requiredKeys || []) {
+          for (const k of kGroup || []) {
+            if (k && !reqItemsMap.has(k.id)) {
+              reqItemsMap.set(k.id, { ...k, count: 1, fir: false, role: 'Anahtar', taskNames: [t.name] });
+            }
+          }
+        }
+
+        if (obj.markerItem) {
+          const m = obj.markerItem;
+          const ex = reqItemsMap.get(m.id);
+          if (ex) {
+            ex.count += 1;
+            if (!ex.taskNames.includes(t.name)) ex.taskNames.push(t.name);
+          } else {
+            reqItemsMap.set(m.id, { ...m, count: 1, fir: false, role: 'İşaretleyici', taskNames: [t.name] });
+          }
+        }
+
         if (obj.items && obj.items.length > 0 && (obj.type === 'giveItem' || obj.type === 'findItem' || obj.type === 'plantItem')) {
           const it = obj.items[0];
           const existing = reqItemsMap.get(it.id);
@@ -484,7 +896,7 @@
               ...it,
               count: obj.count || 1,
               fir: !!obj.foundInRaid,
-              isKey: false,
+              role: obj.type === 'plantItem' ? 'Yerleştir' : 'Görev Eşyası',
               taskNames: [t.name]
             });
           }
@@ -494,31 +906,64 @@
 
     if (taskRequiredItemsBox) {
       const reqList = [...reqItemsMap.values()];
+      if (btnPinAllTaskItems) {
+        btnPinAllTaskItems.hidden = reqList.length === 0;
+      }
+
       if (reqList.length === 0) {
-        taskRequiredItemsBox.innerHTML = `<span class="muted small">Seçili görevler için gereken eşya veya anahtar bulunmuyor. Aşağıdan görev seçin veya "Bu Haritanın Tüm Görevlerini Göster" kutusunu işaretleyin.</span>`;
+        taskRequiredItemsBox.innerHTML = `
+          <div class="empty-state-compact">
+            <span>Görev seçin ya da haritanın tüm görevlerini açın.</span>
+            <button type="button" id="btn-empty-enable-all-tasks" class="btn btn-secondary">Tüm görevleri göster</button>
+          </div>
+        `;
+        const quickBtn = document.getElementById('btn-empty-enable-all-tasks');
+        if (quickBtn) {
+          quickBtn.addEventListener('click', () => {
+            window.tarkovAPI.updateSettings({ showAllMapTasksOnOverlay: true });
+            showToast('Aktif haritanın tüm görevleri haritada gösteriliyor', 'ok');
+          });
+        }
       } else {
         taskRequiredItemsBox.innerHTML = '';
         for (const rItem of reqList) {
+          const isPinned = pinnedSet.has(rItem.id);
           const div = document.createElement('div');
           div.className = 'task-req-item';
           div.innerHTML = `
-            <img src="${rItem.iconLink || ''}" alt="" />
-            <div>
-              <div><strong>${rItem.shortName || rItem.name}</strong> × ${rItem.count} ${rItem.fir ? '<span style="color:#fde68a">(FIR)</span>' : ''} ${rItem.isKey ? '<span style="color:#38bdf8">(Anahtar)</span>' : ''}</div>
-              <div class="muted" style="font-size:10.5px">${rItem.taskNames.join(', ')}</div>
+            <div class="task-req-left">
+              <img src="${rItem.iconLink || ''}" alt="" loading="lazy" />
+              <div>
+                <div>
+                  <strong>${rItem.name}</strong> <span class="muted">(${rItem.shortName || ''})</span>
+                  <strong class="tabular-nums">×${rItem.count}</strong>
+                  ${rItem.fir ? '<span class="chip chip-warn">FIR</span>' : ''}
+                  <span class="chip chip-neutral">${rItem.role}</span>
+                </div>
+                <div class="muted">Görev: ${rItem.taskNames.join(', ')}</div>
+              </div>
             </div>
+            <button type="button" class="btn ${isPinned ? 'btn-secondary' : 'btn-ghost'} btn-req-pin">
+              ${isPinned ? 'Sabitlendi ✓' : 'Aramaya ekle'}
+            </button>
           `;
+          div.querySelector('.btn-req-pin').addEventListener('click', () => {
+            window.tarkovAPI.togglePinItem(rItem);
+          });
           taskRequiredItemsBox.appendChild(div);
         }
       }
     }
 
-    // 2) Görev Listesi Filtreleme & Haritaya Göre Sıralama
+    // 2) Görev Listesi Filtreleme & Haritaya Göre Gruplama
     let filtered = allTasks.filter((t) => {
       if (traderFilter !== 'all' && t.trader?.name !== traderFilter) return false;
       const onMap = doesTaskBelongToMap(t, activeMap);
+      const isDoneTask = completedTaskSet.has(t.id);
       if (modeFilter === 'only_map' && !onMap) return false;
       if (modeFilter === 'only_active' && !activeSet.has(t.id)) return false;
+      if (modeFilter === 'hide_completed' && isDoneTask) return false;
+      if (modeFilter === 'only_completed' && !isDoneTask) return false;
       if (!q) return true;
       const inObj = (t.objectives || []).some((o) => normalizeTr(o.description).includes(q));
       return t._normName.includes(q) || t._normTrader.includes(q) || inObj;
@@ -537,92 +982,97 @@
     });
 
     if (tasksCountInfo) {
-      tasksCountInfo.textContent = `${filtered.length} görev (${activeSet.size} seçili)`;
+      tasksCountInfo.textContent = `${filtered.length} görev · ${activeSet.size} seçili`;
     }
 
-    const shown = filtered.slice(0, 50);
+    const totalMatches = filtered.length;
+    const shown = filtered.slice(0, tasksVisibleCount);
     tasksListContainer.innerHTML = '';
 
+    if (tasksLoadMoreWrap) {
+      const remaining = totalMatches - shown.length;
+      tasksLoadMoreWrap.hidden = remaining <= 0;
+      if (btnTasksLoadMore && remaining > 0) {
+        btnTasksLoadMore.textContent = `Daha fazla göster (+${Math.min(PAGE_SIZE, remaining)} / Kalan: ${remaining})`;
+      }
+    }
+
+    const cardContext = { activeMap, activeSet, completedTaskSet, completedObjSet, pinnedSet };
+
+    // Haritaya göre gruplama
+    const groupsMap = new Map();
     for (const task of shown) {
-      const isSelected = activeSet.has(task.id);
-      const onCurrentMap = doesTaskBelongToMap(task, activeMap);
-      const card = document.createElement('div');
-      card.className = `task-card ${isSelected ? 'active-task' : ''} ${onCurrentMap ? 'current-map-task' : ''}`;
+      const gKey = isSelectedTaskFirstGroup(task, activeSet)
+        ? '__selected__'
+        : getTaskPrimaryMapKey(task, activeMap);
+      if (!groupsMap.has(gKey)) groupsMap.set(gKey, []);
+      groupsMap.get(gKey).push(task);
+    }
 
-      const mapTag = task.map ? task.map.name : onCurrentMap ? activeMap.toUpperCase() : 'Herhangi / Çoklu Harita';
+    for (const [gKey, groupTasks] of groupsMap.entries()) {
+      const groupWrap = document.createElement('div');
+      groupWrap.className = 'task-map-group';
 
-      const keysList = (task.neededKeys || []).flatMap((nk) => nk.keys || []);
-      const keysHtml =
-        keysList.length > 0
-          ? `<div class="small" style="color:#93c5fd">🔑 Gereken Anahtar: ${keysList.map((k) => k.shortName || k.name).join(', ')}</div>`
-          : '';
+      const groupTitle =
+        gKey === '__selected__'
+          ? 'Seçili Aktif Görevler'
+          : gKey === 'any'
+            ? 'Çoklu Harita / Genel Görevler'
+            : `${getTurkishMapName(gKey)}${gKey === activeMap ? ' (Aktif Harita)' : ''}`;
 
-      card.innerHTML = `
-        <div class="card-header-flex">
-          <div>
-            <div class="item-name">${task.name}</div>
-            <div class="item-meta">
-              <strong style="color:#d6b678">${task.trader?.name || 'Trader'}</strong> • Harita: <strong>${mapTag}</strong> • Min Sv: ${task.minPlayerLevel || 1}
-            </div>
-          </div>
-          <button class="btn btn-sm ${isSelected ? 'btn-warning active' : 'btn-primary'} btn-task-toggle">
-            ${isSelected ? '✓ Haritada Seçili' : '+ Görevi Seç (Pinle)'}
-          </button>
-        </div>
-        ${keysHtml}
-        <div class="task-obj-list"></div>
+      const isCollapsed = collapsedTaskGroups.has(gKey);
+      const headerBtn = document.createElement('button');
+      headerBtn.type = 'button';
+      headerBtn.className = 'task-group-header';
+      headerBtn.setAttribute('aria-expanded', String(!isCollapsed));
+      headerBtn.innerHTML = `
+        <span>${groupTitle} · <strong class="tabular-nums">${groupTasks.length}</strong></span>
+        <span class="muted">${isCollapsed ? 'Göster ▾' : 'Daralt ▴'}</span>
       `;
 
-      card.querySelector('.btn-task-toggle').addEventListener('click', () => {
-        window.tarkovAPI.toggleTask(task.id);
+      const gridEl = document.createElement('div');
+      gridEl.className = 'task-group-grid';
+      gridEl.hidden = isCollapsed;
+
+      headerBtn.addEventListener('click', () => {
+        if (collapsedTaskGroups.has(gKey)) {
+          collapsedTaskGroups.delete(gKey);
+        } else {
+          collapsedTaskGroups.add(gKey);
+        }
+        renderTasksSection();
       });
 
-      const objListEl = card.querySelector('.task-obj-list');
-      for (const obj of task.objectives || []) {
-        const isDone = completedObjSet.has(obj.id);
-        const pos = getObjectivePositionOnMap(obj, task, activeMap);
-        const row = document.createElement('div');
-        row.className = `task-obj-row ${isDone ? 'completed' : ''}`;
-
-        const firBadge = obj.foundInRaid ? `<strong style="color:#fde68a">[FIR ×${obj.count || 1}]</strong> ` : '';
-        const locHtml = pos
-          ? `<button class="btn btn-sm btn-secondary btn-obj-route" title="Bu hedefe rota çiz">🎯 Rota Yap (${pos.y.toFixed(0)}m)</button>`
-          : `<span class="pill pill-gray" style="font-size:10px">Konum verisi yok</span>`;
-
-        row.innerHTML = `
-          <label class="checkbox-label" style="flex:1;align-items:flex-start;">
-            <input type="checkbox" class="chk-obj-done" ${isDone ? 'checked' : ''} style="margin-top:3px;" />
-            <span>${firBadge}${obj.description || obj.type}</span>
-          </label>
-          ${locHtml}
-        `;
-
-        row.querySelector('.chk-obj-done').addEventListener('change', () => {
-          window.tarkovAPI.toggleObjective(obj.id);
-        });
-
-        const routeBtn = row.querySelector('.btn-obj-route');
-        if (routeBtn && pos) {
-          routeBtn.addEventListener('click', () => {
-            window.tarkovAPI.setTarget({
-              id: `task_${task.id}_${obj.id}_0`,
-              title: `Görev: ${task.name}`,
-              subtitle: obj.description || task.trader?.name,
-              category: 'task',
-              color: '#a855f7',
-              position: pos
-            });
-          });
-        }
-
-        objListEl.appendChild(row);
+      for (const task of groupTasks) {
+        gridEl.appendChild(buildTaskCardElement(task, cardContext));
       }
 
-      tasksListContainer.appendChild(card);
+      groupWrap.appendChild(headerBtn);
+      groupWrap.appendChild(gridEl);
+      tasksListContainer.appendChild(groupWrap);
     }
   }
 
-  // Yerel Görüntü Ön İşleme (Gri Tonlama + Kontrast) ve Tesseract.js OCR + Fuse.js Eşleştirme
+  function isSelectedTaskFirstGroup(task, activeSet) {
+    return activeSet.has(task.id);
+  }
+
+  // OCR GÖRÜNTÜ ÖN İŞLEME VE ÖNİZLEME AKIŞI
+  function setOcrDropzoneState(state, statusMessage) {
+    if (!ocrDropzone) return;
+    ocrDropzone.classList.remove('state-ready', 'state-dragover', 'state-processing', 'state-success', 'state-error');
+    ocrDropzone.classList.add(`state-${state}`);
+    if (ocrStatusBox && statusMessage) {
+      ocrStatusBox.textContent = statusMessage;
+    }
+    if (ocrProgressWrap) {
+      ocrProgressWrap.hidden = state !== 'processing';
+    }
+    if (btnOcrRetry) {
+      btnOcrRetry.hidden = state !== 'error';
+    }
+  }
+
   async function preprocessImageForOCR(fileOrBlob) {
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -656,17 +1106,32 @@
 
   async function processTaskScreenshotOCR(fileOrBlob) {
     if (!fileOrBlob || !ocrStatusBox) return;
+    lastOcrBlob = fileOrBlob;
+    pendingOcrTaskIds = [];
+
     try {
-      ocrStatusBox.textContent = 'Görüntü ön işleniyor (Gri tonlama + kontrast) ve yerel OCR çalıştırılıyor...';
+      setOcrDropzoneState('processing', 'Görüntü ön işleniyor ve yerel OCR çalıştırılıyor...');
+      if (ocrProgressFill) ocrProgressFill.style.width = '10%';
+      if (ocrProgressPct) ocrProgressPct.textContent = '%10';
+      if (ocrPreviewBar) ocrPreviewBar.hidden = true;
       ocrMatchesList.innerHTML = '';
 
       const dataUrl = await preprocessImageForOCR(fileOrBlob);
       if (!window.Tesseract) {
-        ocrStatusBox.textContent = 'Tesseract.js yüklenemedi.';
+        setOcrDropzoneState('error', 'Hata: Tesseract.js OCR motoru yüklenemedi.');
         return;
       }
 
-      const result = await window.Tesseract.recognize(dataUrl, 'eng', {});
+      const result = await window.Tesseract.recognize(dataUrl, 'eng', {
+        logger: (m) => {
+          if (m && typeof m.progress === 'number') {
+            const pct = Math.max(10, Math.min(100, Math.round(m.progress * 100)));
+            if (ocrProgressFill) ocrProgressFill.style.width = `${pct}%`;
+            if (ocrProgressPct) ocrProgressPct.textContent = `%${pct}`;
+          }
+        }
+      });
+
       const rawText = (result && result.data && result.data.text) || '';
       const lines = rawText
         .split(/\r?\n/)
@@ -674,12 +1139,12 @@
         .filter((l) => l.length >= 4);
 
       if (lines.length === 0 || !fuseTasks) {
-        ocrStatusBox.textContent = 'Görüntüde görev satırı tespit edilemedi. Aşağıdaki arama kutusundan elle seçebilirsiniz.';
+        setOcrDropzoneState('error', 'Görüntüde görev satırı okunamadı. Tekrar deneyin veya arama kutusunu kullanın.');
         return;
       }
 
-      const matchedTaskIds = [];
       const seenTasks = new Set();
+      const matchedEntries = [];
 
       for (const line of lines) {
         const hits = fuseTasks.search(line);
@@ -689,34 +1154,44 @@
           seenTasks.add(top.item.id);
 
           const confidence = Math.round((1 - top.score) * 100);
+          matchedEntries.push({ line, task: top.item, confidence });
           if (confidence >= 60) {
-            matchedTaskIds.push(top.item.id);
+            pendingOcrTaskIds.push(top.item.id);
           }
-
-          const row = document.createElement('div');
-          row.className = 'ocr-match-row';
-          row.innerHTML = `
-            <div>
-              <span class="muted">"${line}"</span> → <strong>${top.item.name}</strong> (${top.item.trader?.name || ''})
-              <span class="pill ${confidence >= 70 ? 'pill-green' : 'pill-gray'}">%${confidence} güven</span>
-            </div>
-            <button class="btn btn-sm btn-primary btn-ocr-add">+ Ekle</button>
-          `;
-          row.querySelector('.btn-ocr-add').addEventListener('click', () => {
-            window.tarkovAPI.toggleTask(top.item.id);
-          });
-          ocrMatchesList.appendChild(row);
         }
       }
 
-      if (matchedTaskIds.length > 0) {
-        await window.tarkovAPI.setActiveTasks(matchedTaskIds);
-        ocrStatusBox.textContent = `✓ OCR tamamlandı: ${matchedTaskIds.length} görev otomatik eşleştirildi ve haritaya pinlendi!`;
-      } else {
-        ocrStatusBox.textContent = 'Yüksek güvenli eşleşme bulunamadı. Aşağıdaki listeden görevleri seçebilirsiniz.';
+      if (matchedEntries.length === 0) {
+        setOcrDropzoneState('error', 'Eşleşen görev bulunamadı. Daha net bir ekran görüntüsü deneyin.');
+        return;
+      }
+
+      setOcrDropzoneState('success', `${matchedEntries.length} görev satırı tespit edildi. Aşağıdan onaylayın.`);
+      if (ocrPreviewBar && ocrPreviewSummary) {
+        ocrPreviewBar.hidden = false;
+        ocrPreviewSummary.textContent = `${matchedEntries.length} görev eşleşti (${pendingOcrTaskIds.length} yüksek güven)`;
+      }
+
+      for (const entry of matchedEntries) {
+        const isHighConf = entry.confidence >= 70;
+        const row = document.createElement('div');
+        row.className = 'ocr-match-row';
+        row.innerHTML = `
+          <div>
+            <strong>${entry.task.name}</strong>
+            <span class="muted">(${entry.task.trader?.name || ''})</span>
+            <span class="chip tabular-nums ${isHighConf ? 'chip-ok' : 'chip-warn'}">%${entry.confidence} güven</span>
+          </div>
+          <button type="button" class="btn btn-secondary btn-ocr-add">Seç ＋</button>
+        `;
+        row.querySelector('.btn-ocr-add').addEventListener('click', () => {
+          window.tarkovAPI.toggleTask(entry.task.id);
+          showToast(`"${entry.task.name}" seçildi`, 'ok');
+        });
+        ocrMatchesList.appendChild(row);
       }
     } catch (err) {
-      ocrStatusBox.textContent = `OCR hatası: ${err.message || err}`;
+      setOcrDropzoneState('error', `OCR hatası: ${err.message || err}`);
     }
   }
 
@@ -734,6 +1209,7 @@
 
       const inp = document.createElement('input');
       inp.type = 'text';
+      inp.className = 'mono-input';
       inp.value = val;
       inp.dataset.shortcutKey = key;
       inp.placeholder = 'Örn: Alt+M';
@@ -759,14 +1235,23 @@
     currentSettings = settings;
     const ov = settings.overlay || {};
 
-    ovStatusPill.textContent = ov.visible ? 'Açık' : 'Gizli';
-    ovStatusPill.className = 'pill ' + (ov.visible ? 'pill-green' : 'pill-gray');
+    const isVisible = !!ov.visible;
+    if (ovStatusPill) ovStatusPill.textContent = isVisible ? 'Açık' : 'Gizli';
+    if (ovStatusDot) ovStatusDot.className = `status-dot ${isVisible ? 'status-on' : 'status-off'}`;
+    if (btnToggleVisible) btnToggleVisible.setAttribute('aria-checked', String(isVisible));
 
-    btnToggleEdit.textContent = `Düzenleme Modu: ${ov.editMode ? 'AÇIK' : 'Kapalı'}`;
-    btnToggleEdit.classList.toggle('active', !!ov.editMode);
+    if (btnToggleEdit) {
+      btnToggleEdit.setAttribute('aria-checked', String(!!ov.editMode));
+    }
 
-    selectGamemodeQuick.value = settings.gameMode || 'pve';
-    setGamemode.value = settings.gameMode || 'pve';
+    const gm = settings.gameMode || 'pve';
+    if (selectGamemodeQuick) selectGamemodeQuick.value = gm;
+    if (setGamemode) setGamemode.value = gm;
+    segGamemodeButtons.forEach((btn) => {
+      const active = btn.dataset.gamemode === gm;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-checked', String(active));
+    });
 
     selectMap.value = settings.selectedMap || 'customs';
     selectMapStyle.value = settings.mapRenderStyle || 'satellite';
@@ -788,6 +1273,8 @@
     chkFollowMode.checked = !!ov.followMode;
     if (chkHoverInteractive) chkHoverInteractive.checked = settings.hoverInteractiveMap !== false;
 
+    updateLayersSummaryBadge();
+
     setLanguage.value = settings.language || 'tr';
     setLevel.value = settings.playerLevel || 15;
     setScreenshotsDir.value = settings.screenshotsDir || '';
@@ -804,7 +1291,7 @@
     rangeYawOffsetQuick.value = yOff;
     lblYawOffsetQuick.textContent = `${yOff}°`;
 
-    codeOverlayBounds.textContent = `Konum: (${ov.x ?? 'Otomatik'}, ${ov.y ?? 'Otomatik'}) | Boyut: ${ov.width}x${ov.height}px | Saydamlık: %${opPct}`;
+    codeOverlayBounds.textContent = `Konum: (${ov.x ?? 'Otomatik'}, ${ov.y ?? 'Otomatik'}) · Boyut: ${ov.width}×${ov.height}px · Saydamlık: %${opPct}`;
 
     renderShortcutsForm(settings.shortcuts, lastShortcutStatus);
     renderPinnedItemsBar();
@@ -817,24 +1304,90 @@
     }
   }
 
-  // Olay Dinleyicileri
-  inputLootSearch.addEventListener('input', () => {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(renderLootResults, 180);
+  // OLAY DİNLEYİCİLERİ VE KLAVYE KISAYOLLARI (Ctrl+K, /, Esc)
+  window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (currentActiveTabId === 'tab-tasks' && inputTaskSearch) {
+        inputTaskSearch.focus();
+        inputTaskSearch.select();
+      } else if (inputLootSearch) {
+        inputLootSearch.focus();
+        inputLootSearch.select();
+      }
+      return;
+    }
+
+    if (e.key === '/' && document.activeElement && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
+      e.preventDefault();
+      if (currentActiveTabId === 'tab-tasks' && inputTaskSearch) {
+        inputTaskSearch.focus();
+      } else if (inputLootSearch) {
+        inputLootSearch.focus();
+      }
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      if (document.activeElement === inputLootSearch && inputLootSearch.value) {
+        inputLootSearch.value = '';
+        lootVisibleCount = PAGE_SIZE;
+        renderLootResults();
+      } else if (document.activeElement === inputTaskSearch && inputTaskSearch.value) {
+        inputTaskSearch.value = '';
+        tasksVisibleCount = PAGE_SIZE;
+        renderTasksSection();
+      }
+    }
   });
 
-  selectLootSort.addEventListener('change', renderLootResults);
-  chkOnlyWithSpawns.addEventListener('change', renderLootResults);
+  inputLootSearch.addEventListener('input', () => {
+    lootVisibleCount = PAGE_SIZE;
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(renderLootResults, 150);
+  });
+
+  if (btnClearLootSearch) {
+    btnClearLootSearch.addEventListener('click', () => {
+      inputLootSearch.value = '';
+      lootVisibleCount = PAGE_SIZE;
+      renderLootResults();
+      inputLootSearch.focus();
+    });
+  }
+
+  if (btnLootLoadMore) {
+    btnLootLoadMore.addEventListener('click', () => {
+      lootVisibleCount += PAGE_SIZE;
+      renderLootResults();
+    });
+  }
+
+  selectLootSort.addEventListener('change', () => {
+    lootVisibleCount = PAGE_SIZE;
+    renderLootResults();
+  });
+
+  chkOnlyWithSpawns.addEventListener('change', () => {
+    lootVisibleCount = PAGE_SIZE;
+    renderLootResults();
+  });
 
   btnRefreshApi.addEventListener('click', () => {
     fetchAndPrepareItems(true);
+    showToast('Flea Market fiyatları yenileniyor...', 'info');
   });
 
   btnClearPins.addEventListener('click', () => {
+    const previousPins = ((currentSettings && currentSettings.pinnedItems) || []).slice();
+    if (previousPins.length === 0) return;
     window.tarkovAPI.clearPinnedItems();
+    showToast(`${previousPins.length} sabitlenen eşya temizlendi`, 'warn', () => {
+      window.tarkovAPI.pinMultipleItems(previousPins);
+    });
   });
 
-  btnToggleVisible.addEventListener('click', () => {
+  function handleToggleVisible() {
     if (!currentSettings) return;
     const nextVis = !currentSettings.overlay.visible;
     window.tarkovAPI.updateSettings({
@@ -843,7 +1396,16 @@
         editMode: nextVis ? currentSettings.overlay.editMode : false
       }
     });
-  });
+    showToast(nextVis ? 'Overlay harita açıldı' : 'Overlay gizlendi (Alt+M ile geri açılır)', 'info');
+  }
+
+  if (rowToggleVisible) {
+    rowToggleVisible.addEventListener('click', (e) => {
+      if (e.target.closest('#btn-toggle-visible')) return;
+      handleToggleVisible();
+    });
+  }
+  btnToggleVisible.addEventListener('click', handleToggleVisible);
 
   btnToggleEdit.addEventListener('click', () => {
     if (!currentSettings) return;
@@ -854,16 +1416,36 @@
         editMode: nextEdit
       }
     });
+    showToast(nextEdit ? 'Düzenleme modu açık (Haritayı sürükleyin)' : 'Düzenleme modu kapatıldı', 'info');
   });
 
-  btnToggleAutoHome.addEventListener('click', async () => {
+  async function handleToggleAutoHome() {
     const st = await window.tarkovAPI.toggleAutoHome();
     renderAutoHomeUI(st);
-  });
+    showToast(st && st.active ? 'Oto-Konum (Home) başlatıldı' : 'Oto-Konum (Home) durduruldu', 'info');
+  }
+
+  if (rowToggleAutoHome) {
+    rowToggleAutoHome.addEventListener('click', (e) => {
+      if (e.target.closest('#btn-toggle-autohome')) return;
+      handleToggleAutoHome();
+    });
+  }
+  btnToggleAutoHome.addEventListener('click', handleToggleAutoHome);
 
   selectAutoHomeInterval.addEventListener('change', () => {
     window.tarkovAPI.updateSettings({
       autoHomeIntervalMs: Number(selectAutoHomeInterval.value) || 1000
+    });
+  });
+
+  segGamemodeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.gamemode;
+      if (mode) {
+        window.tarkovAPI.updateSettings({ gameMode: mode });
+        showToast(`Oyun modu: ${mode === 'pve' ? 'PvE Zone' : 'PvP Regular'}`, 'info');
+      }
     });
   });
 
@@ -872,7 +1454,9 @@
   });
 
   selectMap.addEventListener('change', () => {
+    tasksVisibleCount = PAGE_SIZE;
     window.tarkovAPI.updateSettings({ selectedMap: selectMap.value });
+    showToast(`Harita değiştirildi: ${getTurkishMapName(selectMap.value)}`, 'info');
   });
 
   selectMapStyle.addEventListener('change', () => {
@@ -887,6 +1471,7 @@
   });
 
   function updateLayers() {
+    updateLayersSummaryBadge();
     window.tarkovAPI.updateSettings({
       showMapCallouts: chkShowCallouts ? chkShowCallouts.checked : true,
       showMapContainers: chkShowContainers.checked,
@@ -922,9 +1507,32 @@
       el.addEventListener('change', updateLayers);
     });
 
+  if (btnLayersAllOn) {
+    btnLayersAllOn.addEventListener('click', () => {
+      [chkLayerTasks, chkShowAllTasks, chkLayerLoot, chkShowExtracts, chkShowContainers, chkShowCallouts, chkLayerPlayer, chkLayerRoute]
+        .filter(Boolean)
+        .forEach((c) => {
+          c.checked = true;
+        });
+      updateLayers();
+    });
+  }
+
+  if (btnLayersAllOff) {
+    btnLayersAllOff.addEventListener('click', () => {
+      [chkLayerTasks, chkShowAllTasks, chkLayerLoot, chkShowExtracts, chkShowContainers, chkShowCallouts, chkLayerPlayer, chkLayerRoute]
+        .filter(Boolean)
+        .forEach((c) => {
+          c.checked = false;
+        });
+      updateLayers();
+    });
+  }
+
   if (chkShowAllTasksTab) {
     chkShowAllTasksTab.addEventListener('change', () => {
       if (chkShowAllTasks) chkShowAllTasks.checked = chkShowAllTasksTab.checked;
+      updateLayersSummaryBadge();
       window.tarkovAPI.updateSettings({ showAllMapTasksOnOverlay: chkShowAllTasksTab.checked });
     });
   }
@@ -943,16 +1551,50 @@
 
   if (inputTaskSearch) {
     inputTaskSearch.addEventListener('input', () => {
+      tasksVisibleCount = PAGE_SIZE;
       clearTimeout(taskSearchDebounceTimer);
       taskSearchDebounceTimer = setTimeout(renderTasksSection, 150);
     });
   }
-  if (selectTaskTrader) selectTaskTrader.addEventListener('change', renderTasksSection);
-  if (selectTaskFilter) selectTaskFilter.addEventListener('change', renderTasksSection);
+
+  if (btnClearTaskSearch && inputTaskSearch) {
+    btnClearTaskSearch.addEventListener('click', () => {
+      inputTaskSearch.value = '';
+      tasksVisibleCount = PAGE_SIZE;
+      renderTasksSection();
+      inputTaskSearch.focus();
+    });
+  }
+
+  if (btnTasksLoadMore) {
+    btnTasksLoadMore.addEventListener('click', () => {
+      tasksVisibleCount += PAGE_SIZE;
+      renderTasksSection();
+    });
+  }
+
+  if (selectTaskTrader) {
+    selectTaskTrader.addEventListener('change', () => {
+      tasksVisibleCount = PAGE_SIZE;
+      renderTasksSection();
+    });
+  }
+
+  if (selectTaskFilter) {
+    selectTaskFilter.addEventListener('change', () => {
+      tasksVisibleCount = PAGE_SIZE;
+      renderTasksSection();
+    });
+  }
 
   if (btnClearActiveTasks) {
     btnClearActiveTasks.addEventListener('click', () => {
+      const prevActiveIds = ((currentSettings && currentSettings.activeTaskIds) || []).slice();
+      if (prevActiveIds.length === 0) return;
       window.tarkovAPI.clearActiveTasks();
+      showToast(`${prevActiveIds.length} seçili görev temizlendi`, 'warn', () => {
+        window.tarkovAPI.setActiveTasks(prevActiveIds);
+      });
     });
   }
 
@@ -972,6 +1614,40 @@
       }
       if (itemsToPin.length > 0) {
         window.tarkovAPI.pinMultipleItems(itemsToPin);
+        showToast(`${itemsToPin.length} görev eşyası/anahtarı aramaya eklendi`, 'ok');
+      }
+    });
+  }
+
+  if (btnOcrConfirmAll) {
+    btnOcrConfirmAll.addEventListener('click', async () => {
+      if (pendingOcrTaskIds.length === 0) return;
+      const res = await window.tarkovAPI.setActiveTasks(pendingOcrTaskIds);
+      const autoDoneCount = res?.newlyCompletedCount || 0;
+      showToast(
+        `${pendingOcrTaskIds.length} görev seçildi` +
+          (autoDoneCount > 0 ? ` (${autoDoneCount} önkoşul görevi ✓ Yapıldı işaretlendi)` : ''),
+        'ok'
+      );
+      if (ocrPreviewBar) ocrPreviewBar.hidden = true;
+    });
+  }
+
+  if (btnOcrDismiss) {
+    btnOcrDismiss.addEventListener('click', () => {
+      if (ocrPreviewBar) ocrPreviewBar.hidden = true;
+      ocrMatchesList.innerHTML = '';
+      setOcrDropzoneState('ready', 'Hazır. Ekran görüntüsü yapıştırın veya aşağıdaki listeden görev seçin.');
+    });
+  }
+
+  if (btnOcrRetry) {
+    btnOcrRetry.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (lastOcrBlob) {
+        processTaskScreenshotOCR(lastOcrBlob);
+      } else if (inputOcrFile) {
+        inputOcrFile.click();
       }
     });
   }
@@ -989,16 +1665,20 @@
   }
 
   if (ocrDropzone) {
+    ocrDropzone.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (inputOcrFile) inputOcrFile.click();
+    });
     ocrDropzone.addEventListener('dragover', (e) => {
       e.preventDefault();
-      ocrDropzone.classList.add('dragover');
+      ocrDropzone.classList.add('state-dragover');
     });
     ocrDropzone.addEventListener('dragleave', () => {
-      ocrDropzone.classList.remove('dragover');
+      ocrDropzone.classList.remove('state-dragover');
     });
     ocrDropzone.addEventListener('drop', (e) => {
       e.preventDefault();
-      ocrDropzone.classList.remove('dragover');
+      ocrDropzone.classList.remove('state-dragover');
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
         processTaskScreenshotOCR(e.dataTransfer.files[0]);
       }
@@ -1081,14 +1761,14 @@
     }
     const res = await window.tarkovAPI.testScreenshotFilename(inputTestFilename.value);
     if (res && res.ok) {
-      testParseResult.className = 'parse-result-box ok small';
+      testParseResult.className = 'parse-result-box ok';
       testParseResult.innerHTML = `
         <strong>✓ Başarıyla Parse Edildi ve Haritada Gösterildi!</strong><br/>
         • Konum: X = <strong>${res.position.x}</strong>, Y (Yükseklik) = <strong>${res.position.y}</strong>, Z = <strong>${res.position.z}</strong><br/>
         • Hesaplanan Yön (Yaw): <strong>${res.yaw}° (${res.compass})</strong>
       `;
     } else {
-      testParseResult.className = 'parse-result-box err small';
+      testParseResult.className = 'parse-result-box err';
       testParseResult.innerHTML = `<strong>✗ Format Hatası:</strong> ${res?.error || 'Geçersiz dosya adı'}`;
     }
   }
@@ -1106,16 +1786,17 @@
   btnScanLatest.addEventListener('click', async () => {
     const res = await window.tarkovAPI.scanLatestScreenshot();
     if (!res || !res.ok) {
-      testParseResult.className = 'parse-result-box err small';
+      testParseResult.className = 'parse-result-box err';
       testParseResult.innerHTML = `<strong>Bilgi:</strong> ${res?.error || 'Klasörde görüntü bulunamadı.'}`;
     } else {
-      testParseResult.className = 'parse-result-box ok small';
+      testParseResult.className = 'parse-result-box ok';
       testParseResult.innerHTML = `<strong>✓ Klasördeki son görüntü okundu:</strong> ${res.filename}`;
     }
   });
 
   btnClearTrail.addEventListener('click', () => {
     window.tarkovAPI.clearPlayerTrail();
+    showToast('Oyuncu izleri temizlendi', 'info');
   });
 
   btnSaveShortcuts.addEventListener('click', async () => {
@@ -1128,6 +1809,7 @@
     if (res && res.status) {
       lastShortcutStatus = res.status;
       applySettingsToUI(res.settings);
+      showToast('Kısayollar kaydedildi ve kontrol edildi', 'ok');
     }
   });
 
@@ -1136,6 +1818,7 @@
     if (res && res.status) {
       lastShortcutStatus = res.status;
       applySettingsToUI(res.settings);
+      showToast('Kısayollar varsayılana sıfırlandı', 'info');
     }
   });
 
@@ -1150,6 +1833,7 @@
   btnClearLogs.addEventListener('click', async () => {
     await window.tarkovAPI.clearLogs();
     logsContainer.innerHTML = '';
+    showToast('Günlük temizlendi', 'info');
   });
 
   // Başlangıç Yüklemesi

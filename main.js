@@ -69,6 +69,7 @@ const DEFAULT_SETTINGS = {
   hoverInteractiveMap: true,
   showAllMapTasksOnOverlay: false,
   activeTaskIds: [],
+  completedTaskIds: [],
   completedObjectiveIds: [],
   pinnedItems: [],
   overlay: {
@@ -259,6 +260,7 @@ function loadSettings() {
         hoverInteractiveMap: parsed.hoverInteractiveMap !== undefined ? !!parsed.hoverInteractiveMap : true,
         showAllMapTasksOnOverlay: !!parsed.showAllMapTasksOnOverlay,
         activeTaskIds: Array.isArray(parsed.activeTaskIds) ? parsed.activeTaskIds : [],
+        completedTaskIds: Array.isArray(parsed.completedTaskIds) ? parsed.completedTaskIds : [],
         completedObjectiveIds: Array.isArray(parsed.completedObjectiveIds) ? parsed.completedObjectiveIds : [],
         pinnedItems: Array.isArray(parsed.pinnedItems) ? parsed.pinnedItems : [],
         overlay: {
@@ -679,6 +681,7 @@ async function buildOverlayMapPayload() {
   // AŞAMA 5: Görev Hedefi Pinleri (Seçili Görevler veya Bu Haritanın Tüm Görevleri)
   const taskMarkers = [];
   const activeTaskIdsSet = new Set(currentSettings.activeTaskIds || []);
+  const completedTaskIdsSet = new Set(currentSettings.completedTaskIds || []);
   const completedObjSet = new Set(currentSettings.completedObjectiveIds || []);
   const showAllTasks = !!currentSettings.showAllMapTasksOnOverlay;
 
@@ -692,6 +695,7 @@ async function buildOverlayMapPayload() {
 
   if (ds && Array.isArray(ds.tasks)) {
     for (const task of ds.tasks) {
+      if (completedTaskIdsSet.has(task.id)) continue;
       const isTaskSelected = activeTaskIdsSet.has(task.id);
       if (!isTaskSelected && !showAllTasks) continue;
 
@@ -875,12 +879,12 @@ function createOverlayWindow() {
 
 function createPanelWindow() {
   panelWindow = new BrowserWindow({
-    width: 1220,
-    height: 850,
-    minWidth: 960,
-    minHeight: 660,
-    title: 'Tarkov Yardımcı Harita - Kontrol Paneli (PvE / PvP)',
-    backgroundColor: '#121316',
+    width: 1200,
+    height: 820,
+    minWidth: 900,
+    minHeight: 640,
+    title: 'Tarkov Yardımcı Harita — Kontrol Paneli',
+    backgroundColor: '#0c0e12',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1380,39 +1384,145 @@ function setupIPC() {
     };
   });
 
+  /**
+   * Bir görev aktif (açık) olduğunda, onun açılması için bitirilmesi şart olan (taskRequirements)
+   * tüm geçmiş ön koşul görevlerini ve onların alt hedeflerini özyinelemeli (recursive) olarak bulur.
+   */
+  function collectPrerequisiteCompletedIds(seedTaskIds) {
+    const tasks = (dataService && dataService.currentData && dataService.currentData.tasks) || [];
+    const tasksById = new Map(tasks.map((t) => [t.id, t]));
+    const autoCompletedTasks = new Set(currentSettings.completedTaskIds || []);
+    const autoCompletedObjs = new Set(currentSettings.completedObjectiveIds || []);
+
+    const queue = [...seedTaskIds];
+    const visited = new Set(seedTaskIds);
+
+    while (queue.length > 0) {
+      const curId = queue.shift();
+      const t = tasksById.get(curId);
+      if (!t || !Array.isArray(t.taskRequirements)) continue;
+
+      for (const req of t.taskRequirements) {
+        const reqId = req.taskId || req.task?.id;
+        if (!reqId) continue;
+        const statuses = req.status || ['complete'];
+        if (statuses.includes('complete') || statuses.includes(' any')) {
+          autoCompletedTasks.add(reqId);
+          const reqTask = tasksById.get(reqId);
+          if (reqTask && Array.isArray(reqTask.objectives)) {
+            for (const o of reqTask.objectives) {
+              if (o && o.id) autoCompletedObjs.add(o.id);
+            }
+          }
+          if (!visited.has(reqId)) {
+            visited.add(reqId);
+            queue.push(reqId);
+          }
+        }
+      }
+    }
+
+    return {
+      completedTaskIds: [...autoCompletedTasks],
+      completedObjectiveIds: [...autoCompletedObjs]
+    };
+  }
+
   ipcMain.handle('tasks:toggleTask', async (_event, taskId) => {
     if (!taskId) return { ok: false };
     const list = new Set(currentSettings.activeTaskIds || []);
+    const compTasks = new Set(currentSettings.completedTaskIds || []);
+
     if (list.has(taskId)) {
       list.delete(taskId);
     } else {
       list.add(taskId);
+      compTasks.delete(taskId); // Aktif seçilen görev tamamlanmış listesindeyse çıkar
+      currentSettings.completedTaskIds = [...compTasks];
+      const prereqs = collectPrerequisiteCompletedIds([taskId]);
+      currentSettings.completedTaskIds = prereqs.completedTaskIds.filter((id) => !list.has(id));
+      currentSettings.completedObjectiveIds = prereqs.completedObjectiveIds;
     }
     currentSettings.activeTaskIds = [...list];
     saveSettings();
     broadcastState();
     await broadcastOverlayMapData();
-    return { ok: true, activeTaskIds: currentSettings.activeTaskIds };
+    return {
+      ok: true,
+      activeTaskIds: currentSettings.activeTaskIds,
+      completedTaskIds: currentSettings.completedTaskIds
+    };
+  });
+
+  ipcMain.handle('tasks:toggleCompletedTask', async (_event, taskId) => {
+    if (!taskId) return { ok: false };
+    const comp = new Set(currentSettings.completedTaskIds || []);
+    const act = new Set(currentSettings.activeTaskIds || []);
+    const compObjs = new Set(currentSettings.completedObjectiveIds || []);
+    const tasks = (dataService && dataService.currentData && dataService.currentData.tasks) || [];
+    const targetTask = tasks.find((t) => t.id === taskId);
+
+    if (comp.has(taskId)) {
+      comp.delete(taskId);
+      if (targetTask) {
+        for (const o of targetTask.objectives || []) compObjs.delete(o.id);
+      }
+    } else {
+      comp.add(taskId);
+      act.delete(taskId);
+      if (targetTask) {
+        for (const o of targetTask.objectives || []) compObjs.add(o.id);
+      }
+    }
+
+    currentSettings.completedTaskIds = [...comp];
+    currentSettings.activeTaskIds = [...act];
+    currentSettings.completedObjectiveIds = [...compObjs];
+    saveSettings();
+    broadcastState();
+    await broadcastOverlayMapData();
+    return {
+      ok: true,
+      completedTaskIds: currentSettings.completedTaskIds,
+      activeTaskIds: currentSettings.activeTaskIds
+    };
   });
 
   ipcMain.handle('tasks:setActiveTasks', async (_event, taskIdsArray) => {
     if (!Array.isArray(taskIdsArray)) return { ok: false };
     const merged = new Set([...(currentSettings.activeTaskIds || []), ...taskIdsArray]);
     currentSettings.activeTaskIds = [...merged];
+
+    const prevCompCount = (currentSettings.completedTaskIds || []).length;
+    const prereqs = collectPrerequisiteCompletedIds(currentSettings.activeTaskIds);
+    currentSettings.completedTaskIds = prereqs.completedTaskIds.filter((id) => !merged.has(id));
+    currentSettings.completedObjectiveIds = prereqs.completedObjectiveIds;
+    const newlyCompletedCount = Math.max(0, currentSettings.completedTaskIds.length - prevCompCount);
+
     saveSettings();
     broadcastState();
     await broadcastOverlayMapData();
-    addLog('info', `Görev listesi güncellendi (${currentSettings.activeTaskIds.length} aktif görev).`);
-    return { ok: true, activeTaskIds: currentSettings.activeTaskIds };
+    addLog(
+      'info',
+      `Görev listesi güncellendi (${currentSettings.activeTaskIds.length} aktif görev, ${currentSettings.completedTaskIds.length} eski ön koşul görevi otomatik tamamlandı olarak işaretlendi).`
+    );
+    return {
+      ok: true,
+      activeTaskIds: currentSettings.activeTaskIds,
+      completedTaskIds: currentSettings.completedTaskIds,
+      newlyCompletedCount
+    };
   });
 
   ipcMain.handle('tasks:clearActiveTasks', async () => {
     currentSettings.activeTaskIds = [];
+    currentSettings.completedTaskIds = [];
+    currentSettings.completedObjectiveIds = [];
     saveSettings();
     broadcastState();
     await broadcastOverlayMapData();
-    addLog('info', 'Aktif görev listesi temizlendi.');
-    return { ok: true, activeTaskIds: [] };
+    addLog('info', 'Aktif ve tamamlanan görev listesi temizlendi.');
+    return { ok: true, activeTaskIds: [], completedTaskIds: [] };
   });
 
   ipcMain.handle('tasks:toggleObjective', async (_event, objectiveId) => {
