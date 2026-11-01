@@ -1,0 +1,396 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  color: #e4e6eb;
+}
+
+.overlay-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(14, 16, 20, 0.9);
+  border: 1px solid rgba(196, 164, 108, 0.45);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.overlay-container.edit-mode {
+  border: 2px solid #f59e0b;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.45);
+}
+
+.overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  background: rgba(22, 25, 32, 0.96);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  -webkit-app-region: drag;
+  z-index: 1000;
+}
+
+.header-left, .header-right, .header-center {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.badge {
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+
+.map-name {
+  background: #2b303c;
+  color: #d6b678;
+  border: 1px solid rgba(214, 182, 120, 0.35);
+  text-transform: uppercase;
+}
+
+.mode-badge {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+}
+
+.pin-badge {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.edit-indicator {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fcd34d;
+  border: 1px solid #f59e0b;
+}
+
+.lock-btn {
+  -webkit-app-region: no-drag;
+  background: #f59e0b;
+  color: #111;
+  border: none;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lock-btn:hover {
+  background: #fbbf24;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.compass-bar {
+  color: #cbd5e1;
+  font-weight: 600;
+}
+
+.compass-dir {
+  color: #f59e0b;
+}
+
+.compass-target {
+  color: #94a3b8;
+  font-weight: 400;
+  margin-left: 3px;
+}
+
+.map-viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #12151b;
+}
+
+.leaflet-map {
+  width: 100%;
+  height: 100%;
+  background: #101318 !important;
+}
+
+/* SVG Harita Katmanı Görünürlük Ayarları */
+.leaflet-map svg .hidden-layer {
+  display: none;
+}
+
+/* Pinlenen Eşya Lejant Kutusu */
+.pinned-legend {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 800;
+  background: rgba(13, 15, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 170px;
+  pointer-events: none;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid #fff;
+}
+
+.legend-sq {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  background: #f59e0b;
+  border: 1px solid #fff;
+}
+
+/* Özel Harita Pin Şekilleri: Loose Loot (Yuvarlak), Container (Kare) */
+.loot-pin-circle {
+  border-radius: 50%;
+  border: 1.5px solid #ffffff;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.85);
+}
+
+.container-pin-square {
+  width: 9px;
+  height: 9px;
+  background: rgba(245, 158, 11, 0.85);
+  border: 1px solid #fde68a;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+}
+
+.extract-pin-diamond {
+  width: 10px;
+  height: 10px;
+  background: #10b981;
+  border: 1.5px solid #ecfdf5;
+  transform: rotate(45deg);
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.9);
+}
+
+/* Harita Üzerindeki Konum İsimleri (Callouts & Çıkış Etiketleri) */
+.callout-label {
+  background: rgba(12, 14, 19, 0.78);
+  color: #fde68a;
+  border: 1px solid rgba(214, 182, 120, 0.55);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 1px 2px #000;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
+}
+
+.extract-label {
+  background: rgba(6, 78, 59, 0.85);
+  color: #a7f3d0;
+  border: 1px solid rgba(16, 185, 129, 0.65);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 1px 2px #000;
+}
+
+/* Aşama 5: Görev Hedefi Pinleri */
+.task-pin-marker {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #a855f7;
+  color: #ffffff;
+  border: 1.8px solid #f3e8ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  box-shadow: 0 0 7px rgba(168, 85, 247, 0.95);
+  cursor: pointer;
+}
+
+.task-pin-marker.unselected-task {
+  background: #d97706;
+  border-color: #fef3c7;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.85);
+}
+
+.overlay-container.hover-interactive {
+  border-color: rgba(56, 189, 248, 0.7);
+}
+
+/* Oyuncu Konumu ve Yön Oku + Son 10 Konum İzi */
+.player-marker-wrapper {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.95));
+}
+
+.player-trail-dot {
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: 0 0 4px rgba(56, 189, 248, 0.5);
+}
+
+/* Leaflet Tooltip Koyu Tema */
+.leaflet-tooltip.tarkov-tooltip {
+  background: rgba(15, 18, 24, 0.95);
+  border: 1px solid #c8a45d;
+  color: #f1f5f9;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+}
+
+.map-loading {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 850;
+  background: rgba(15, 18, 24, 0.9);
+  border: 1px solid rgba(214, 182, 120, 0.4);
+  color: #d6b678;
+  font-size: 10px;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+
+.overlay-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 10px;
+  color: #94a3b8;
+  background: rgba(18, 20, 26, 0.96);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  z-index: 1000;
+}
+
+/* Oto-Home Rozeti ve Aşama 4 Rota/Pusula HUD Stilleri */
+.autohome-on {
+  background: rgba(34, 197, 94, 0.25);
+  color: #86efac;
+  border: 1px solid #22c55e;
+}
+
+.autohome-off {
+  background: rgba(148, 163, 184, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.rel-arrow {
+  display: inline-block;
+  color: #38bdf8;
+  font-size: 12px;
+  font-weight: 700;
+  transition: transform 0.15s ease;
+}
+
+.nav-hud {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 820;
+  background: rgba(12, 14, 19, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  border-radius: 5px;
+  padding: 5px 8px;
+  pointer-events: none;
+  max-width: 260px;
+}
+
+.nav-hud-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-hud-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 10.5px;
+}
+
+.nav-dist {
+  color: #38bdf8;
+  font-weight: 700;
+}
+
+.nav-rel {
+  color: #fcd34d;
+  font-weight: 600;
+}
+
+.nav-elev {
+  color: #cbd5e1;
+}
+
+.nav-elev.up {
+  color: #4ade80;
+  font-weight: 700;
+}
+
+.nav-elev.down {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.target-pulse-ring {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #f43f5e;
+  background: rgba(244, 63, 94, 0.25);
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.9);
+}

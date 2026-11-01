@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.tarkov.dev https://tarkov.dev; connect-src 'self' data: blob: https://api.tarkov.dev https://json.tarkov.dev https://assets.tarkov.dev https://cdn.jsdelivr.net;" />
+  <title>Tarkov Yardımcı Harita - Kontrol Paneli (PvE / PvP)</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Sol Menü & Hızlı Overlay Kontrolü -->
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>TARKOV OVERLAY</h1>
+        <span class="subtitle">Yardımcı Mini Harita & Görev (PvE / PvP)</span>
+      </div>
+
+      <!-- Önemli Ekran Modu Uyarısı -->
+      <div class="alert-banner">
+        <strong>ÖNEMLİ NOT:</strong> Oyun <em>Windowed (Pencereli)</em> veya <em>Borderless (Çerçevesiz Tam Ekran)</em> modda olmalıdır. Tam ekran (Exclusive Fullscreen) modda Windows overlay penceresini oyunun üstünde gösteremez.
+      </div>
+
+      <!-- Hızlı Overlay Durum Kartı -->
+      <div class="quick-card">
+        <div class="quick-header">
+          <span>Overlay Durumu</span>
+          <span id="ov-status-pill" class="pill pill-green">Açık</span>
+        </div>
+
+        <div class="quick-controls">
+          <button id="btn-toggle-visible" class="btn btn-secondary">Gizle / Göster</button>
+          <button id="btn-toggle-edit" class="btn btn-warning">Düzenleme Modu: Kapalı</button>
+        </div>
+
+        <!-- Otomatik HOME Tuşu (Alt+H) Hızlı Butonu -->
+        <div class="quick-controls">
+          <button id="btn-toggle-autohome" class="btn btn-secondary" style="width:100%">
+            Oto-Home (Alt+H): KAPALI (1 sn)
+          </button>
+        </div>
+
+        <div class="control-row">
+          <label for="select-gamemode-quick">Oyun Modu (Flea Fiyatları)</label>
+          <select id="select-gamemode-quick">
+            <option value="pve">PvE Zone (Canlı PvE Flea)</option>
+            <option value="regular">PvP (Regular Flea)</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <label for="select-map">Aktif Harita</label>
+          <select id="select-map">
+            <option value="customs">Customs</option>
+            <option value="woods">Woods</option>
+            <option value="interchange">Interchange</option>
+            <option value="factory">Factory</option>
+            <option value="shoreline">Shoreline</option>
+            <option value="reserve">Reserve</option>
+            <option value="lighthouse">Lighthouse</option>
+            <option value="streets-of-tarkov">Streets of Tarkov</option>
+            <option value="ground-zero">Ground Zero</option>
+            <option value="the-lab">The Lab</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <label for="select-map-style">Harita Görünüm Modu</label>
+          <select id="select-map-style">
+            <option value="satellite">Uydu / Görsel Harita (Önerilen)</option>
+            <option value="svg">Vektör / Şematik (SVG)</option>
+          </select>
+        </div>
+
+        <div class="control-row">
+          <label for="range-opacity">Saydamlık: <span id="lbl-opacity">%90</span></label>
+          <input type="range" id="range-opacity" min="20" max="100" step="5" value="90" />
+        </div>
+
+        <div class="layer-toggles">
+          <span class="section-label">Harita Katmanları</span>
+          <label class="checkbox-label"><input type="checkbox" id="chk-show-callouts" checked /> Konum İsimleri (Bina / Bölge)</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-layer-loot" checked /> Eşya Spawn Pinleri</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-show-containers" /> Konteyner Pinleri (Kare)</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-show-extracts" checked /> Çıkış (Extract) Pinleri (Elmas)</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-layer-tasks" checked /> Görev Hedefleri (Mor Yıldız)</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-show-all-tasks" /> Bu Haritanın Tüm Görevlerini Göster</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-layer-player" checked /> Oyuncu Oku & Son 10 İz</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-layer-route" checked /> Rota Çizgisi & Mesafe</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-follow-mode" checked /> Takip Modu (Oyuncu Merkezde)</label>
+          <label class="checkbox-label"><input type="checkbox" id="chk-hover-interactive" checked /> Fare Üzerine Gelince Haritayı Kaydır</label>
+        </div>
+      </div>
+
+      <!-- Navigasyon Sekmeleri -->
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="tab-loot">1. Eşya Arama (PvE / PvP Fiyat)</button>
+        <button class="tab-btn" data-tab="tab-player">2. Konum, Oto-Home & Rota</button>
+        <button class="tab-btn" data-tab="tab-settings">3. Ayarlar & Kısayollar</button>
+        <button class="tab-btn" data-tab="tab-tasks">4. Görevler & OCR (Aşama 5)</button>
+        <button class="tab-btn" data-tab="tab-logs">5. Günlük / Hata Ekranı</button>
+      </nav>
+    </aside>
+
+    <!-- Sağ Ana İçerik Alanı -->
+    <main class="content-area">
+      <!-- SEKME 1: EŞYA ARAMA & HARİTA PİNLERİ -->
+      <section id="tab-loot" class="tab-pane active">
+        <div class="card-header-flex">
+          <div>
+            <h2>Eşya Spawn Haritası ve PvE / PvP Fiyat Analizi</h2>
+            <p class="muted small">İsim veya kısa isimle arayın. <strong>PvE Zone</strong> modunda canlı PvE Flea Market fiyatları (Son En Düşük + 24s Ortalama) gösterilir.</p>
+          </div>
+          <div class="api-cache-box">
+            <span id="api-status-badge" class="pill pill-gray">Veri Yükleniyor...</span>
+            <button id="btn-refresh-api" class="btn btn-sm btn-secondary">Fiyatları Şimdi Yenile</button>
+          </div>
+        </div>
+
+        <div class="probability-warning">
+          <strong>Bilgi:</strong> Gösterilen spawn noktaları <em>"çıkabilir" (olası spawn havuzu)</em> seviyesindedir; oyun sunucusu her raid başında bu noktalardan rastgele seçim yapar. Kesin çıkma yüzdesi API'de yer almamaktadır.
+        </div>
+
+        <div class="panel-card pinned-bar-card">
+          <div class="card-header-flex">
+            <span class="section-label">Haritada Pinlenen Eşyalar (Arama Listesi)</span>
+            <button id="btn-clear-pins" class="btn btn-sm btn-secondary">Tüm Pinleri Temizle</button>
+          </div>
+          <div id="pinned-items-container" class="pinned-chips">
+            <span class="muted small">Henüz eşya seçilmedi. Aşağıdaki listeden "Haritada Pinle" butonuna tıklayın.</span>
+          </div>
+        </div>
+
+        <div class="loot-search-bar">
+          <input type="text" id="input-loot-search" placeholder="Eşya adı veya kısa adı yazın (Örn: LEDX, GPU, Grafik, Cıvata, Anahtar, Salewa, Bitcoin...)" />
+          <select id="select-loot-sort">
+            <option value="slot">Sırala: Slot Başı Değer (Azalan)</option>
+            <option value="price">Sırala: En İyi Fiyat (Azalan)</option>
+            <option value="spawns">Sırala: Aktif Harita Spawn Sayısı</option>
+            <option value="name">Sırala: İsim (A-Z)</option>
+          </select>
+          <label class="checkbox-label">
+            <input type="checkbox" id="chk-only-with-spawns" />
+            Sadece Harita Spawn'ı Olanlar
+          </label>
+        </div>
+
+        <div id="loot-results-info" class="muted small">Eşyalar hazırlanıyor...</div>
+        <div id="loot-results-grid" class="loot-results-grid"></div>
+      </section>
+
+      <!-- SEKME 2: OYUNCU KONUMU, OTO-HOME & ROTA HEDEFİ (AŞAMA 3 & 4) -->
+      <section id="tab-player" class="tab-pane">
+        <div class="card-header-flex">
+          <div>
+            <h2>Oyuncu Konumu, Otomatik Home (Alt+H) ve Rota Hedefi</h2>
+            <p class="muted small"><code>Alt+H</code> kısayolu ile her 1 saniyede bir otomatik <code>Home</code> tuşuna basılır; <code>C:\Users\Jetira\Documents\Escape from Tarkov\Screenshots</code> klasörüne düşen dosya adından konum, yön ve hedef mesafesi hesaplanır.</p>
+          </div>
+          <div class="api-cache-box">
+            <button id="btn-scan-latest" class="btn btn-sm btn-primary">Klasördeki Son Görüntüyü Oku</button>
+            <button id="btn-clear-trail" class="btn btn-sm btn-secondary">İzleri Temizle</button>
+          </div>
+        </div>
+
+        <div class="cards-grid">
+          <!-- Canlı Konum & Otomatik Home Kartı -->
+          <div class="panel-card">
+            <h3>Canlı Konum & Otomatik Home (Alt+H)</h3>
+            <div class="player-live-box">
+              <div class="live-stat">
+                <span class="price-label">Oto-Home Döngüsü (Alt+H)</span>
+                <span id="pl-autohome-status" class="price-val">KAPALI</span>
+              </div>
+              <div class="live-stat">
+                <span class="price-label">Son Güncelleme</span>
+                <span id="pl-last-update" class="price-val">Bekleniyor...</span>
+              </div>
+              <div class="live-stat">
+                <span class="price-label">3B Koordinat (X, Y, Z)</span>
+                <span id="pl-coords" class="price-val">-</span>
+              </div>
+              <div class="live-stat">
+                <span class="price-label">Bakış Yönü (Yaw / Pusula)</span>
+                <span id="pl-yaw" class="price-val slot-badge">-</span>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="select-autohome-interval">Otomatik Home Basma Sıklığı</label>
+              <select id="select-autohome-interval">
+                <option value="1000">Her 1 Saniyede Bir</option>
+                <option value="2000">Her 2 Saniyede Bir</option>
+                <option value="3000">Her 3 Saniyede Bir (Daha Az Uyarı)</option>
+                <option value="5000">Her 5 Saniyede Bir (Önerilen - Minimum Uyarı)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="chk-move-trigger" />
+                <strong>Akıllı Hareket Modu:</strong> Yalnızca yürürken (<code>W/A/S/D</code>) veya çıkışa bakarken (<code>O</code>) konum al (Envanterdeyken/sabitken uyarı çıkmasını engeller)
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="chk-auto-detect-logs" checked />
+                <strong>Tarkov Loglarından (%100 Kesin) Otomatik Harita Algıla:</strong> Raid başlarken girdiğiniz haritayı oyun logundan otomatik seçer
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="chk-auto-detect-map" />
+                Koordinattan haritayı tahmin et (Önerilmez)
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label for="range-yaw-offset-quick">Yön (Yaw) Ofset Ayarı: <span id="lbl-yaw-offset-quick">0°</span></label>
+              <input type="range" id="range-yaw-offset-quick" min="-180" max="180" step="1" value="0" />
+            </div>
+          </div>
+
+          <!-- Aşama 4: Hedef Seçimi & Rota Navigasyon Kartı -->
+          <div class="panel-card">
+            <div class="card-header-flex">
+              <h3>Rota Hedefi ve Yön Pusulası (Aşama 4)</h3>
+              <div class="quick-controls">
+                <button id="btn-next-target" class="btn btn-sm btn-primary" title="Kısayol: Alt+N">Sonraki Hedef (Alt+N)</button>
+                <button id="btn-clear-target" class="btn btn-sm btn-secondary">Hedefi Kaldır</button>
+              </div>
+            </div>
+
+            <div class="player-live-box">
+              <div class="live-stat">
+                <span class="price-label">Seçili Hedef</span>
+                <span id="rt-target-name" class="price-val">Hedef Seçilmedi</span>
+              </div>
+              <div class="live-stat">
+                <span class="price-label">Mesafe (Metre)</span>
+                <span id="rt-distance" class="price-val" style="color:#38bdf8">-</span>
+              </div>
+              <div class="live-stat">
+                <span class="price-label">Baktığınız Yöne Göre</span>
+                <span id="rt-relative-dir" class="price-val slot-badge">-</span>
+              </div>
+              <div class="live-stat">
+                <span class="price-label">Kat / Yükseklik (Y) Farkı</span>
+                <span id="rt-elevation" class="price-val">-</span>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="chk-auto-nearest-target" />
+                Otomatik En Yakın Hedefi Seç (Konum güncellendikçe en yakın eşya/çıkışa kilitlenir)
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label for="select-target-manual">Haritadaki Hedeflerden Elle Seç (Çıkışlar & Pinlenen Eşyalar)</label>
+              <select id="select-target-manual">
+                <option value="">-- Hedef Seçin --</option>
+              </select>
+            </div>
+
+            <div class="info-note">
+              Not: Çizilen düz çizgi bina içi/engelleri dolaşan bir yol tarifi değil, oyuncudan hedefe kuş uçuşu yön ve kat gösterimidir. Overlay düzenleme modunda (<code>Alt+E</code>) haritadaki herhangi bir pine tıklayarak da hedef seçebilirsiniz.
+            </div>
+          </div>
+        </div>
+
+        <!-- Dosya Adı Parser Test Kutusu -->
+        <div class="panel-card">
+          <h3>Dosya Adı Parser Test Kutusu</h3>
+          <div class="loot-search-bar" style="grid-template-columns: 1fr auto auto auto;">
+            <input type="text" id="input-test-filename" value="2026-11-01[17-25]_158.42, 2.15, -45.80_0.0012, 0.7071, -0.0015, 0.7071_14.2 (0).png" />
+            <button id="btn-test-filename" class="btn btn-primary">Test Et ve Haritada Göster</button>
+            <button id="btn-sample-customs" class="btn btn-sm btn-secondary">Örnek: Customs</button>
+            <button id="btn-sample-woods" class="btn btn-sm btn-secondary">Örnek: Woods</button>
+          </div>
+          <div id="test-parse-result" class="parse-result-box muted small">
+            Test sonucu burada görüntülenecek...
+          </div>
+        </div>
+      </section>
+
+      <!-- SEKME 3: AYARLAR & KISAYOLLAR -->
+      <section id="tab-settings" class="tab-pane">
+        <h2>Genel Ayarlar ve Global Kısayollar</h2>
+        <p class="muted">Tüm ayarlar ve overlay penceresinin konumu/boyutu <code>userData</code> klasörüne otomatik kaydedilir.</p>
+
+        <div class="cards-grid">
+          <div class="panel-card">
+            <h3>Oyun ve Veri Ayarları</h3>
+            <div class="form-group">
+              <label for="set-gamemode">Oyun Modu (Flea Market & Görevler)</label>
+              <select id="set-gamemode">
+                <option value="pve">PvE Zone (Canlı PvE Flea Fiyatları)</option>
+                <option value="regular">PvP (Regular)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="set-language">Veri Dili (API lang parametresi)</label>
+              <select id="set-language">
+                <option value="tr">Türkçe (tr)</option>
+                <option value="en">İngilizce (en)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="set-level">Oyuncu Seviyesi (Opsiyonel)</label>
+              <input type="number" id="set-level" min="1" max="79" value="15" />
+            </div>
+            <div class="form-group">
+              <label for="set-screenshots-dir">Ekran Görüntüsü Klasörü (Home / PrintScreen)</label>
+              <input type="text" id="set-screenshots-dir" />
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="set-delete-ss" checked />
+                Konumu okuduktan sonra ekran görüntüsünü otomatik sil (Sadece desenle eşleşen yeni dosyalar)
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="set-yaw-offset">Yön (Yaw) Ofseti: <span id="lbl-yaw-offset">0°</span></label>
+              <input type="range" id="set-yaw-offset" min="-180" max="180" step="1" value="0" />
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="card-header-flex">
+              <h3>Global Kısayollar</h3>
+              <button id="btn-reset-shortcuts" class="btn btn-sm btn-secondary">Varsayılana Sıfırla</button>
+            </div>
+            <p class="muted small">Örnek format: <code>Alt+M</code>, <code>Alt+H</code>, <code>F8</code>. Çakışan kısayollar aşağıda uyarıyla gösterilir.</p>
+
+            <div id="shortcuts-form" class="shortcuts-list"></div>
+
+            <div class="form-actions">
+              <button id="btn-save-shortcuts" class="btn btn-primary">Kısayolları Kaydet ve Kontrol Et</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card storage-info-card">
+          <h3>Saklama Konumu (userData)</h3>
+          <p class="small">Ayarlar Dosyası: <code id="code-settings-path">Yükleniyor...</code></p>
+          <p class="small">Overlay Konum / Boyut: <code id="code-overlay-bounds">-</code></p>
+        </div>
+      </section>
+
+      <!-- SEKME 4: GÖREVLER & OCR (AŞAMA 5) -->
+      <section id="tab-tasks" class="tab-pane">
+        <div class="card-header-flex">
+          <div>
+            <h2>Görev Yönetimi, Ekran Görüntüsü OCR ve Harita Görev Pinleri</h2>
+            <p class="muted small">Görev ekran görüntüsünü sürükleyip bırakın / <code>Ctrl+V</code> ile yapıştırın veya aşağıdan seçin. Seçili görevlerin konumları overlay haritasında <strong>Mor Yıldız (★/📦/📡)</strong> olarak görünür ve tıklanınca rota hedefi olur.</p>
+          </div>
+          <div class="api-cache-box">
+            <label class="checkbox-label" style="background:#262b36;padding:6px 10px;border-radius:5px;border:1px solid #d6b678;">
+              <input type="checkbox" id="chk-show-all-tasks-tab" />
+              <strong>Bu Haritanın Tüm Görevlerini Haritada Göster</strong>
+            </label>
+            <button id="btn-clear-active-tasks" class="btn btn-sm btn-secondary">Seçili Görevleri Temizle</button>
+          </div>
+        </div>
+
+        <div class="cards-grid">
+          <!-- Sol: OCR Yükleme & Bulanık Eşleştirme (tesseract.js + fuse.js) -->
+          <div class="panel-card">
+            <h3>1. Görev Ekran Görüntüsü OCR (Yerel tesseract.js + fuse.js)</h3>
+            <div id="ocr-dropzone" class="ocr-dropzone" tabindex="0">
+              <div class="ocr-drop-title">📷 Görev Listesi Ekran Görüntüsünü Buraya Sürükleyin veya <code>Ctrl+V</code> ile Yapıştırın</div>
+              <div class="muted small">Görüntü yalnızca cihazınızda (gri tonlama + kontrast ön işlemeyle) taranır ve bellekten silinir.</div>
+              <input type="file" id="input-ocr-file" accept="image/*" style="display:none;" />
+              <button id="btn-ocr-browse" class="btn btn-sm btn-primary" style="margin-top:6px;">Dosya Seç...</button>
+            </div>
+            <div id="ocr-status-box" class="muted small">OCR hazır. Ayrıca aşağıdan görev adını yazarak elle de ekleyebilirsiniz.</div>
+            <div id="ocr-matches-list" class="ocr-matches-list"></div>
+          </div>
+
+          <!-- Sağ: Bu Harita İçin Gerekli Eşyalar ve Anahtarlar Özeti -->
+          <div class="panel-card">
+            <div class="card-header-flex">
+              <h3>2. Aktif Harita Gerekli Görev Eşyaları & Anahtarlar</h3>
+              <button id="btn-pin-all-task-items" class="btn btn-sm btn-primary">+ Hepsini Arama Listesine Ekle (Pinle)</button>
+            </div>
+            <p class="muted small">Seçtiğiniz görevler için aktif haritada (veya genel olarak) gereken eşyalar ve anahtarlar:</p>
+            <div id="task-required-items-box" class="task-req-box">
+              <span class="muted small">Henüz aktif görev seçilmedi.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Görev Arama & Filtreleme Çubuğu -->
+        <div class="loot-search-bar" style="grid-template-columns: 1fr 220px 220px auto;">
+          <input type="text" id="input-task-search" placeholder="Görev adı, Trader veya hedef açıklaması ara (Örn: Debut, Pocket Watch, Jaeger, Dorms...)" />
+          <select id="select-task-trader">
+            <option value="all">Tüm Trader'lar</option>
+            <option value="Prapor">Prapor</option>
+            <option value="Therapist">Therapist</option>
+            <option value="Skier">Skier</option>
+            <option value="Peacekeeper">Peacekeeper</option>
+            <option value="Mechanic">Mechanic</option>
+            <option value="Ragman">Ragman</option>
+            <option value="Jaeger">Jaeger</option>
+            <option value="Lightkeeper">Lightkeeper</option>
+            <option value="Ref">Ref</option>
+          </select>
+          <select id="select-task-filter">
+            <option value="map_first">Haritaya Göre Grupla (Aktif Harita Üstte)</option>
+            <option value="only_map">Sadece Aktif Haritanın Görevleri</option>
+            <option value="only_active">Sadece Seçtiğim (Aktif) Görevler</option>
+          </select>
+          <span id="tasks-count-info" class="muted small">0 görev</span>
+        </div>
+
+        <div id="tasks-list-container" class="tasks-list-container"></div>
+      </section>
+
+      <!-- SEKME 5: GÜNLÜK / HATA EKRANI -->
+      <section id="tab-logs" class="tab-pane">
+        <div class="card-header-flex">
+          <h2>Uygulama Günlüğü ve Hata Ekranı</h2>
+          <button id="btn-clear-logs" class="btn btn-secondary">Günlüğü Temizle</button>
+        </div>
+        <div id="logs-container" class="logs-box"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="../../node_modules/fuse.js/dist/fuse.min.js"></script>
+  <script src="../../node_modules/tesseract.js/dist/tesseract.min.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

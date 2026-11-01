@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tarkov.dev https://tarkov.dev; connect-src 'self' https://api.tarkov.dev https://json.tarkov.dev https://assets.tarkov.dev;" />
+  <title>Tarkov Overlay</title>
+  <link rel="stylesheet" href="../../node_modules/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div id="overlay-root" class="overlay-container">
+    <!-- Üst Bilgi, Pusula ve Durum Çubuğu -->
+    <header id="drag-header" class="overlay-header">
+      <div class="header-left">
+        <span id="map-badge" class="badge map-name">CUSTOMS</span>
+        <span id="autohome-badge" class="badge autohome-off">OTO-HOME: KAPALI</span>
+      </div>
+      <div class="header-center" id="compass-bar">
+        <span class="compass-dir" id="compass-dir">K</span>
+        <span class="compass-deg" id="compass-deg">0°</span>
+        <span id="rel-arrow" class="rel-arrow hidden">⬆</span>
+        <span class="compass-target" id="target-summary">Hedef Yok</span>
+      </div>
+      <div class="header-right">
+        <span id="edit-badge" class="badge edit-indicator hidden">DÜZENLEME</span>
+        <button id="btn-zoom-in" class="lock-btn hidden" title="Yakınlaştır (Alt+8)">+</button>
+        <button id="btn-zoom-out" class="lock-btn hidden" title="Uzaklaştır (Alt+9)">−</button>
+        <button id="btn-fit" class="lock-btn hidden" title="Haritayı Sığdır">Sığdır</button>
+        <button id="btn-lock" class="lock-btn hidden" title="Düzenleme Modunu Kapat (Oyuna Geç)">Kilitle</button>
+      </div>
+    </header>
+
+    <!-- Harita Alanı (Leaflet) -->
+    <main class="map-viewport" id="map-viewport">
+      <div id="leaflet-map" class="leaflet-map"></div>
+
+      <!-- Pinlenen Eşyalar Lejantı -->
+      <div id="pinned-legend" class="pinned-legend hidden"></div>
+
+      <!-- Seçili Hedef Navigasyon Kartı (Aşama 4) -->
+      <div id="nav-hud" class="nav-hud hidden">
+        <div class="nav-hud-title" id="nav-hud-title">-</div>
+        <div class="nav-hud-stats">
+          <span id="nav-hud-dist" class="nav-dist">0m</span>
+          <span id="nav-hud-rel" class="nav-rel">-</span>
+          <span id="nav-hud-elev" class="nav-elev">-</span>
+        </div>
+      </div>
+
+      <!-- Yükleme / Durum Kutusu -->
+      <div id="map-loading" class="map-loading hidden">Harita yükleniyor...</div>
+    </main>
+
+    <!-- Alt Bilgi & Düzenleme İpucu -->
+    <footer class="overlay-footer">
+      <span id="pos-status">Konum: Home (Alt+H) bekleniyor</span>
+      <span id="opacity-status">PvE • %90</span>
+    </footer>
+  </div>
+
+  <script src="../../node_modules/leaflet/dist/leaflet.js"></script>
+  <script src="../../src/geo/coordinates.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>
