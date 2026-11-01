@@ -104,10 +104,29 @@
     });
   }
 
-  function ensureLeafletInitialized() {
-    if (leafletMap) return;
+  let baseLayerGroup = null;
+  let currentMapLoadId = 0;
+
+  function initOrResetLeafletMap(geoConfig) {
+    if (!geoConfig) return;
+
+    // Harita zaten bu haritanın CRS'i ile başlatılmışsa yeniden oluşturma, sadece katmanları temizle
+    if (leafletMap && loadedMapKey === geoConfig.normalizedName) {
+      if (baseLayerGroup) baseLayerGroup.clearLayers();
+      return;
+    }
+
+    if (leafletMap) {
+      try {
+        leafletMap.off();
+        leafletMap.remove();
+      } catch (_e) {}
+      leafletMap = null;
+    }
+
+    const crs = buildMapCRS(geoConfig);
     leafletMap = L.map('leaflet-map', {
-      crs: L.CRS.Simple,
+      crs: crs,
       zoomControl: false,
       attributionControl: false,
       zoomSnap: 0.25,
@@ -115,6 +134,7 @@
       wheelPxPerZoomLevel: 80
     });
 
+    baseLayerGroup = L.layerGroup().addTo(leafletMap);
     calloutLayerGroup = L.layerGroup().addTo(leafletMap);
     spawnLayerGroup = L.layerGroup().addTo(leafletMap);
     extractLayerGroup = L.layerGroup().addTo(leafletMap);
@@ -144,37 +164,36 @@
   }
 
   async function loadMapBaseLayer(geoConfig, renderStyle = 'satellite') {
-    ensureLeafletInitialized();
     if (!geoConfig) return;
+
+    const loadId = ++currentMapLoadId;
 
     if (loadedMapKey === geoConfig.normalizedName && loadedRenderStyle === renderStyle && activeBaseLayer) {
       return;
     }
 
+    initOrResetLeafletMap(geoConfig);
     loadedMapKey = geoConfig.normalizedName;
     loadedRenderStyle = renderStyle;
 
     mapLoading.classList.remove('hidden');
     mapLoading.textContent = `${geoConfig.name} yükleniyor...`;
 
-    if (activeBaseLayer) {
-      leafletMap.removeLayer(activeBaseLayer);
-      activeBaseLayer = null;
+    if (baseLayerGroup) {
+      baseLayerGroup.clearLayers();
     }
-    if (activeFloorTileLayer) {
-      leafletMap.removeLayer(activeFloorTileLayer);
-      activeFloorTileLayer = null;
-    }
+    activeBaseLayer = null;
+    activeFloorTileLayer = null;
     activeFloorName = null;
     activeSvgElement = null;
 
-    leafletMap.options.crs = buildMapCRS(geoConfig);
     const leafletBounds = L.latLngBounds(window.TarkovGeo.mapBoundsToLeafletBounds(geoConfig.bounds));
     leafletMap.setMinZoom(0.5);
     leafletMap.setMaxZoom(6.5);
 
     let layerCreated = false;
 
+    // 1. Öncelik: Kullanıcı Uydu (Satellite) seçtiyse ve haritanın tilePath'i varsa
     if (renderStyle === 'satellite' && geoConfig.tilePath) {
       activeBaseLayer = L.tileLayer(geoConfig.tilePath, {
         tileSize: 256,
@@ -182,19 +201,26 @@
         minZoom: 0.5,
         maxZoom: 6.5,
         maxNativeZoom: geoConfig.maxZoom || 5
-      }).addTo(leafletMap);
+      });
+      activeBaseLayer.addTo(baseLayerGroup);
       layerCreated = true;
     }
 
+    // 2. Öncelik: Eğer Uydu yoksa veya SVG stili seçildiyse ve svgPath varsa
     if (!layerCreated && geoConfig.svgPath) {
       try {
         const res = await window.tarkovAPI.getMapSvg(geoConfig.normalizedName);
+        if (loadId !== currentMapLoadId) {
+          // Başka bir harita seçildi, eski haritanın SVG'sini iptal et!
+          return;
+        }
+
         if (res && res.ok && res.svgText) {
           const wrapper = document.createElement('div');
           wrapper.innerHTML = res.svgText.trim();
           const parsedSvg = wrapper.querySelector('svg');
 
-          if (parsedSvg) {
+          if (parsedSvg && loadId === currentMapLoadId) {
             const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             svgEl.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
             if (parsedSvg.getAttribute('viewBox')) {
@@ -205,31 +231,109 @@
 
             activeBaseLayer = L.svgOverlay(svgEl, leafletBounds, {
               interactive: false
-            }).addTo(leafletMap);
+            });
+            activeBaseLayer.addTo(baseLayerGroup);
             layerCreated = true;
           }
         }
       } catch (_err) {}
     }
 
-    if (!layerCreated && geoConfig.tilePath) {
+    // 3. Fallback: SVG indirilemediyse veya yoksa tilePath dene
+    if (!layerCreated && geoConfig.tilePath && loadId === currentMapLoadId) {
       activeBaseLayer = L.tileLayer(geoConfig.tilePath, {
         tileSize: 256,
         bounds: leafletBounds,
         minZoom: 0.5,
         maxZoom: 6.5,
         maxNativeZoom: geoConfig.maxZoom || 5
-      }).addTo(leafletMap);
+      });
+      activeBaseLayer.addTo(baseLayerGroup);
+      layerCreated = true;
     }
 
-    leafletMap.invalidateSize();
-    leafletMap.fitBounds(leafletBounds, { animate: false });
-    mapLoading.classList.add('hidden');
+    if (loadId === currentMapLoadId) {
+      leafletMap.invalidateSize();
+      leafletMap.fitBounds(leafletBounds, { animate: false });
+      mapLoading.classList.add('hidden');
+    }
+  }
+
+  /**
+   * Haritanın kenarındaki ikonların tooltip'lerinin pencere dışına taşmasını engeller
+   */
+  function bindSmartTooltip(marker, html, baseOffset = [0, -8], extraClass = '') {
+    marker.bindTooltip(html, {
+      className: extraClass ? `tarkov-tooltip ${extraClass}` : 'tarkov-tooltip',
+      direction: 'top',
+      offset: baseOffset,
+      interactive: true,
+      opacity: 1
+    });
+
+    let closeTimer = null;
+
+    function cancelClose() {
+      if (closeTimer) {
+        clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+    }
+
+    function scheduleClose(delay = 400) {
+      cancelClose();
+      closeTimer = setTimeout(() => {
+        try {
+          marker.closeTooltip();
+        } catch (_e) {}
+      }, delay);
+    }
+
+    marker.on('mouseover', () => {
+      cancelClose();
+      if (!leafletMap) return;
+      const tip = marker.getTooltip();
+      if (!tip) return;
+
+      const pt = leafletMap.latLngToContainerPoint(marker.getLatLng());
+      const sz = leafletMap.getSize();
+      if (pt.x < 145) {
+        tip.options.direction = 'right';
+        tip.options.offset = [10, 0];
+      } else if (pt.x > sz.x - 145) {
+        tip.options.direction = 'left';
+        tip.options.offset = [-10, 0];
+      } else if (pt.y < 125) {
+        tip.options.direction = 'bottom';
+        tip.options.offset = [0, 10];
+      } else {
+        tip.options.direction = 'top';
+        tip.options.offset = baseOffset;
+      }
+
+      if (!marker.isTooltipOpen()) {
+        marker.openTooltip();
+      }
+
+      // Tooltip DOM elementine fare girdiğinde kapanmayı iptal et
+      setTimeout(() => {
+        const el = tip.getElement();
+        if (el && !el._hasHoverBridge) {
+          el._hasHoverBridge = true;
+          el.addEventListener('mouseenter', cancelClose);
+          el.addEventListener('mouseleave', () => scheduleClose(300));
+        }
+      }, 30);
+    });
+
+    marker.on('mouseout', () => {
+      scheduleClose(450);
+    });
   }
 
   /**
    * Aşama 4: Seçili hedef halkasını, oyuncudan hedefe düz rota çizgisini,
-   * mesafe/göreli açı ("35° sağda", "arkanızda") ve kat farkını ("yukarıda/aşağıda") çizer.
+   * çoklu rotasyon zincirini (#1 -> #2 -> #3...), mesafe/göreli açı ve kat farkını çizer.
    */
   function renderRouteAndNavigation() {
     if (!leafletMap || !routeLayerGroup) return;
@@ -239,6 +343,44 @@
     const target = currentPlayerState?.activeTarget;
     const cur = currentPlayerState?.current;
     const nav = currentPlayerState?.navInfo;
+    const tour = currentPlayerState?.rotationTour || [];
+
+    // Çoklu Otomatik Rotasyon Zincirini Çiz (#1 -> #2 -> #3 -> ...)
+    if (showRoute && currentSettings?.autoRotationEnabled !== false && tour.length > 0) {
+      for (let i = 0; i < tour.length; i++) {
+        const stop = tour[i];
+        if (!stop || !stop.position) continue;
+        const stopLL = window.TarkovGeo.gamePosToLatLngArray(stop.position);
+
+        // #1'den #2'ye, #2'den #3'e zincirleme önizleme çizgisi
+        if (i < tour.length - 1 && tour[i + 1]?.position) {
+          const nextStop = tour[i + 1];
+          const segWaypoints = window.TarkovGeo.computeSafeRouteWaypoints(
+            stop.position,
+            nextStop.position,
+            currentMapPayload?.hazards || [],
+            currentMapPayload?.mapNormalizedName || ''
+          );
+          const segLLs = segWaypoints.map((pt) => window.TarkovGeo.gamePosToLatLngArray(pt));
+          L.polyline(segLLs, {
+            color: '#38bdf8',
+            weight: 2.0,
+            opacity: 0.72,
+            dashArray: '4, 6',
+            interactive: false
+          }).addTo(routeLayerGroup);
+        }
+
+        // Sıra numarası rozeti (1, 2, 3...)
+        const stepBadge = L.divIcon({
+          className: '',
+          html: `<div class="tour-step-badge" style="background:${i === 0 ? '#f43f5e' : '#0284c7'}">${i + 1}</div>`,
+          iconSize: [16, 16],
+          iconAnchor: [-6, 16]
+        });
+        L.marker(stopLL, { icon: stepBadge, interactive: false, zIndexOffset: 1600 }).addTo(routeLayerGroup);
+      }
+    }
 
     if (!target || !target.position || !showRoute) {
       navHud.classList.add('hidden');
@@ -296,13 +438,14 @@
       // Üst pusula çubuğu ve dönen ok
       relArrowEl.classList.remove('hidden');
       relArrowEl.style.transform = `rotate(${nav.relativeAngle}deg)`;
-      targetSummaryEl.textContent = `${nav.horizontalDistance}m • ${nav.relativeText}`;
+      const tourInfo = tour.length > 1 ? ` • Zincir: 1/${tour.length}` : '';
+      targetSummaryEl.textContent = `${nav.horizontalDistance}m • ${nav.relativeText}${tourInfo}`;
 
       // Sol alt Navigasyon HUD kartı
       navHud.classList.remove('hidden');
       navHudTitle.textContent = `🎯 ${target.title}`;
       navHudDist.textContent = `${nav.horizontalDistance}m`;
-      navHudRel.textContent = nav.relativeText;
+      navHudRel.textContent = `${nav.relativeText}${tour.length > 1 ? ` (Sıradaki: ${tour[1].title})` : ''}`;
       navHudElev.textContent = nav.elevationText;
       navHudElev.className = `nav-elev ${nav.elevationStatus}`;
     } else {
@@ -332,7 +475,8 @@
     activeFloorName = nextFloorName;
 
     if (activeFloorTileLayer) {
-      leafletMap.removeLayer(activeFloorTileLayer);
+      if (baseLayerGroup) baseLayerGroup.removeLayer(activeFloorTileLayer);
+      else if (leafletMap) leafletMap.removeLayer(activeFloorTileLayer);
       activeFloorTileLayer = null;
     }
 
@@ -347,7 +491,8 @@
         maxZoom: 6.5,
         maxNativeZoom: geoConfig.maxZoom || 5,
         zIndex: 5
-      }).addTo(leafletMap);
+      });
+      activeFloorTileLayer.addTo(baseLayerGroup || leafletMap);
     }
 
     // SVG haritası katmanı varsa ilgili kat grubunu (<g id="Second_Floor"> vb.) öne çıkar
@@ -547,6 +692,7 @@
     const containerMarkers = currentMapPayload.containerMarkers || [];
     const pmcSpawns = currentMapPayload.pmcSpawns || [];
     const scavSpawns = currentMapPayload.scavSpawns || [];
+    const bossSpawns = currentMapPayload.bossSpawns || [];
     const hazards = currentMapPayload.hazards || [];
     const locks = currentMapPayload.locks || [];
     const switches = currentMapPayload.switches || [];
@@ -558,8 +704,10 @@
     const taskMarkers = currentMapPayload.taskMarkers || [];
     const showContainers = !!currentMapPayload.showMapContainers;
     const enabledCatSet = new Set(currentMapPayload.enabledContainerCategories || []);
+    const visitedSet = new Set(currentPlayerState?.visitedTargetIds || []);
     const showPmcSpawns = !!currentMapPayload.showPmcSpawns;
     const showScavSpawns = !!currentMapPayload.showScavSpawns;
+    const showBossSpawns = !!currentMapPayload.showBossSpawns;
     const showValuableSpawns = !!currentMapPayload.showValuableSpawns;
     const showMapLocks = !!currentMapPayload.showMapLocks;
     const showMapHazards = currentMapPayload.showMapHazards !== false;
@@ -618,15 +766,15 @@
       });
     }
 
-    // 1) Harita Konum İsimleri (Bina ve Bölge Callout Etiketleri)
+    // 1) Harita Konum İsimleri (Bina ve Bölge Callout Etiketleri — Kutusuz Temiz Konturlu Yazı)
     if (showCallouts) {
       for (const c of callouts) {
         const latLng = window.TarkovGeo.gamePosToLatLngArray({ x: c.x, y: c.y || 0, z: c.z });
         const labelIcon = L.divIcon({
-          className: '',
+          className: 'callout-div-icon',
           html: `<div class="callout-label" style="cursor:pointer;" title="Tıklayınca rota hedefi yapar">${c.name}</div>`,
           iconSize: [0, 0],
-          iconAnchor: [35, 8]
+          iconAnchor: [0, 0]
         });
 
         const cMarker = L.marker(latLng, { icon: labelIcon, zIndexOffset: 200 });
@@ -649,10 +797,12 @@
       for (const m of looseMarkers) {
         const latLng = window.TarkovGeo.gamePosToLatLngArray(m.position);
         const pinImgSrc = m.iconLink || '../../assets/map-icons/loose_loot.png';
+        const isVisited = visitedSet.has(m.id);
         const icon = L.divIcon({
           className: '',
-          html: `<div style="width:22px;height:22px;border-radius:5px;background:rgba(12,14,18,0.92);border:2px solid ${m.color};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.85);">
+          html: `<div style="position:relative;width:22px;height:22px;border-radius:5px;background:rgba(12,14,18,0.92);border:2px solid ${isVisited ? '#22c55e' : m.color};opacity:${isVisited ? 0.55 : 1};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.85);">
             <img src="${pinImgSrc}" style="width:18px;height:18px;object-fit:contain;" alt="" />
+            ${isVisited ? '<span style="position:absolute;top:-5px;right:-5px;background:#16a34a;color:#fff;font-size:8px;font-weight:900;border-radius:50%;width:12px;height:12px;display:flex;align-items:center;justify-content:center;">✓</span>' : ''}
           </div>`,
           iconSize: [22, 22],
           iconAnchor: [11, 11]
@@ -663,17 +813,19 @@
         const slotStr = m.pricePerSlot ? `${m.pricePerSlot.toLocaleString('tr-TR')} ₽/slot` : '-';
         const previewImg = m.baseImageLink || m.iconLink || '../../assets/map-icons/loose_loot.png';
 
-        marker.bindTooltip(
+        const safeItemName = (m.itemName || '').replace(/"/g, '&quot;');
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${previewImg}" style="width:46px;height:46px;object-fit:contain;background:#0c0e12;border:1px solid ${m.color};border-radius:4px;" alt="" />
-            <div>
+            <img src="${previewImg}" class="task-subthumb" style="width:48px;height:48px;object-fit:contain;background:#0c0e12;border:1px solid ${m.color};border-radius:4px;flex-shrink:0;cursor:zoom-in;" title="Büyütmek için tıkla" data-zoom-src="${previewImg}" data-zoom-caption="${safeItemName}" alt="" />
+            <div style="min-width:0;">
               <strong style="color:${m.color}">${m.itemName}</strong> (${m.shortName})<br/>
               <span>En İyi Fiyat: <strong>${priceStr}</strong> (${m.bestSource})</span><br/>
               <span>Slot Başı: ${slotStr} | Kat (Y): ${m.position.y.toFixed(1)}m</span><br/>
               <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
             </div>
           </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -10] }
+          [0, -10]
         );
 
         marker.on('click', () => {
@@ -697,10 +849,12 @@
         if (!v.position) continue;
         const latLng = window.TarkovGeo.gamePosToLatLngArray(v.position);
         const pinImgSrc = v.iconLink || '../../assets/map-icons/valuable_bitcoin.webp';
+        const isVisited = visitedSet.has(v.id);
         const icon = L.divIcon({
           className: '',
-          html: `<div style="width:22px;height:22px;border-radius:50%;background:rgba(12,14,18,0.92);border:2px solid ${v.highlightColor};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 7px ${v.highlightColor};">
+          html: `<div style="position:relative;width:22px;height:22px;border-radius:50%;background:rgba(12,14,18,0.92);border:2px solid ${isVisited ? '#22c55e' : v.highlightColor};opacity:${isVisited ? 0.55 : 1};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 7px ${v.highlightColor};">
             <img src="${pinImgSrc}" style="width:16px;height:16px;object-fit:contain;" alt="" />
+            ${isVisited ? '<span style="position:absolute;top:-5px;right:-5px;background:#16a34a;color:#fff;font-size:8px;font-weight:900;border-radius:50%;width:12px;height:12px;display:flex;align-items:center;justify-content:center;">✓</span>' : ''}
           </div>`,
           iconSize: [22, 22],
           iconAnchor: [11, 11]
@@ -710,10 +864,12 @@
         const priceStr = v.bestPrice ? `${v.bestPrice.toLocaleString('tr-TR')} ₽` : '-';
         const previewImg = v.baseImageLink || v.iconLink || '../../assets/map-icons/valuable_bitcoin.webp';
 
-        marker.bindTooltip(
+        const safeValName = (v.itemName || '').replace(/"/g, '&quot;');
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${previewImg}" style="width:48px;height:48px;object-fit:contain;background:#0c0e12;border:1px solid ${v.highlightColor};border-radius:4px;" alt="" />
-            <div>
+            <img src="${previewImg}" class="task-subthumb" style="width:48px;height:48px;object-fit:contain;background:#0c0e12;border:1px solid ${v.highlightColor};border-radius:4px;flex-shrink:0;cursor:zoom-in;" title="Büyütmek için tıkla" data-zoom-src="${previewImg}" data-zoom-caption="${safeValName}" alt="" />
+            <div style="min-width:0;">
               <strong style="color:${v.highlightColor}">💎 ${v.itemName} (${v.shortName})</strong><br/>
               <span>Değer: <strong>${priceStr}</strong> (${v.bestSource})</span><br/>
               ${v.otherNames ? `<span style="color:#cbd5e1">Olası Havuz: ${v.otherNames}</span><br/>` : ''}
@@ -721,7 +877,7 @@
               <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
             </div>
           </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -10] }
+          [0, -10]
         );
 
         marker.on('click', () => {
@@ -739,19 +895,22 @@
       }
     }
 
-    // 2C) Kategori Kategori Loot Kutuları (Sabitlenen Eşya Pinlerinden BAĞIMSIZ çalışır)
+    // 2C) Kategori Kategori Loot Kutuları (Sabitlenen Eşya Pinlerinden BAĞIMSIZ çalışır + Zincirleme Rota Desteği)
     if (enabledCatSet.size > 0) {
       containerMarkers.forEach((c, idx) => {
         if (!c.position) return;
         if (!enabledCatSet.has(c.categoryKey)) return;
 
+        const contId = `cont_${idx}`;
+        const isVisited = visitedSet.has(contId);
         const latLng = window.TarkovGeo.gamePosToLatLngArray(c.position);
-        const pinColor = c.color || '#f59e0b';
+        const pinColor = isVisited ? '#22c55e' : c.color || '#f59e0b';
         const iconSrc = `../../assets/map-icons/${c.iconFile || 'container_crate.png'}`;
         const icon = L.divIcon({
           className: '',
-          html: `<div style="width:20px;height:20px;border-radius:4px;background:rgba(12,14,18,0.88);border:1.5px solid ${pinColor};display:flex;align-items:center;justify-content:center;cursor:pointer;">
+          html: `<div style="position:relative;width:20px;height:20px;border-radius:4px;background:rgba(12,14,18,0.88);border:1.5px solid ${pinColor};opacity:${isVisited ? 0.55 : 1};display:flex;align-items:center;justify-content:center;cursor:pointer;">
             <img src="${iconSrc}" style="width:15px;height:15px;object-fit:contain;" alt="" />
+            ${isVisited ? '<span style="position:absolute;top:-5px;right:-5px;background:#16a34a;color:#fff;font-size:8px;font-weight:900;border-radius:50%;width:11px;height:11px;display:flex;align-items:center;justify-content:center;">✓</span>' : ''}
           </div>`,
           iconSize: [20, 20],
           iconAnchor: [10, 10]
@@ -760,26 +919,27 @@
         const marker = L.marker(latLng, { icon, zIndexOffset: 350 });
         const cName = c.lootContainer?.name || 'Konteyner';
         const catLabel = c.categoryLabel || 'Loot Kutusu';
-        marker.bindTooltip(
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${iconSrc}" style="width:36px;height:36px;object-fit:contain;background:#0c0e12;border:1px solid ${pinColor};border-radius:4px;padding:3px;" alt="" />
-            <div>
-              <strong style="color:${pinColor}">${cName}</strong><br/>
+            <img src="${iconSrc}" style="width:36px;height:36px;object-fit:contain;background:#0c0e12;border:1px solid ${pinColor};border-radius:4px;padding:3px;flex-shrink:0;" alt="" />
+            <div style="min-width:0;">
+              <strong style="color:${pinColor}">${cName} ${isVisited ? '(✓ Lootlandı)' : ''}</strong><br/>
               <span>Kategori: ${catLabel}</span><br/>
               <span>Yükseklik (Y): ${c.position.y.toFixed(1)}m</span><br/>
-              <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
+              <em style="color:#fcd34d">Tıklayınca güvenli rota çizer (Ulaşınca sıradaki kutuya geçer)</em>
             </div>
           </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
+          [0, -8]
         );
 
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
-            id: `cont_${idx}`,
+            id: contId,
             title: cName,
             subtitle: catLabel,
             category: 'container',
-            color: pinColor,
+            color: c.color || '#f59e0b',
             position: c.position
           });
         });
@@ -804,17 +964,18 @@
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 380 });
         const keyTitle = lk.key ? `${lk.key.name} (${lk.key.shortName || ''})` : 'Kilitli Kapı';
-        marker.bindTooltip(
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${keyImg}" style="width:42px;height:42px;object-fit:contain;background:#0c0e12;border:1px solid #93c5fd;border-radius:4px;" alt="" />
-            <div>
+            <img src="${keyImg}" style="width:42px;height:42px;object-fit:contain;background:#0c0e12;border:1px solid #93c5fd;border-radius:4px;flex-shrink:0;" alt="" />
+            <div style="min-width:0;">
               <strong style="color:#93c5fd">🔑 ${keyTitle}</strong><br/>
               ${lk.needsPower ? `<span style="color:#fde68a">⚡ Önce Elektrik Şalteri Açılmalı</span><br/>` : ''}
               <span>Yükseklik (Y): ${lk.position.y.toFixed(1)}m</span><br/>
               <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
             </div>
           </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
+          [0, -8]
         );
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
@@ -842,10 +1003,7 @@
           iconAnchor: [10, 10]
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 420 });
-        marker.bindTooltip(`<div><strong style="color:#fde68a">🛡 BTR Durağı: ${bs.name}</strong></div>`, {
-          className: 'tarkov-tooltip',
-          direction: 'top'
-        });
+        bindSmartTooltip(marker, `<div><strong style="color:#fde68a">🛡 BTR Durağı: ${bs.name}</strong></div>`);
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
             id: bs.id,
@@ -869,9 +1027,9 @@
           iconAnchor: [9, 9]
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 410 });
-        marker.bindTooltip(
-          `<div><strong style="color:#fbbf24">⚡ Şalter / Güç Kolu</strong><br/><span>${sw.name} (Y: ${sw.position.y.toFixed(1)}m)</span></div>`,
-          { className: 'tarkov-tooltip', direction: 'top' }
+        bindSmartTooltip(
+          marker,
+          `<div><strong style="color:#fbbf24">⚡ Şalter / Güç Kolu</strong><br/><span>${sw.name} (Y: ${sw.position.y.toFixed(1)}m)</span></div>`
         );
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
@@ -896,10 +1054,7 @@
           iconAnchor: [9, 9]
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 390 });
-        marker.bindTooltip(`<div><strong style="color:#f87171">Sabit Ağır Silah (AGS / NSV)</strong></div>`, {
-          className: 'tarkov-tooltip',
-          direction: 'top'
-        });
+        bindSmartTooltip(marker, `<div><strong style="color:#f87171">Sabit Ağır Silah (AGS / NSV)</strong></div>`);
         marker.addTo(spawnLayerGroup);
       }
 
@@ -913,10 +1068,7 @@
           iconAnchor: [10, 10]
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 430 });
-        marker.bindTooltip(`<div><strong style="color:#fb923c">Harita Geçişi (Transit): ${tr.description || ''}</strong></div>`, {
-          className: 'tarkov-tooltip',
-          direction: 'top'
-        });
+        bindSmartTooltip(marker, `<div><strong style="color:#fb923c">Harita Geçişi (Transit): ${tr.description || ''}</strong></div>`);
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
             id: tr.id,
@@ -931,7 +1083,7 @@
       }
     }
 
-    // 5) PMC ve Scav / Boss Doğma Noktaları (Resmi tarkov.dev İkonlarıyla)
+    // 5) PMC, Scav ve Boss Doğma Noktaları (Birbirinden Bağımsız Katmanlar)
     if (showPmcSpawns && spawnLayerGroup) {
       for (const sp of pmcSpawns) {
         if (!sp.position) continue;
@@ -944,16 +1096,16 @@
           iconAnchor: [10, 10]
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 300 });
-        marker.bindTooltip(
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${iconSrc}" style="width:28px;height:28px;object-fit:contain;" alt="" />
+            <img src="${iconSrc}" style="width:28px;height:28px;object-fit:contain;flex-shrink:0;" alt="" />
             <div>
               <strong style="color:#60a5fa">PMC Doğma Noktası</strong><br/>
               <span>Yükseklik (Y): ${sp.position.y.toFixed(1)}m</span><br/>
               <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
             </div>
-          </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
+          </div>`
         );
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
@@ -981,22 +1133,22 @@
           iconAnchor: [10, 10]
         });
         const marker = L.marker(latLng, { icon, zIndexOffset: 280 });
-        marker.bindTooltip(
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${iconSrc}" style="width:28px;height:28px;object-fit:contain;" alt="" />
+            <img src="${iconSrc}" style="width:28px;height:28px;object-fit:contain;flex-shrink:0;" alt="" />
             <div>
               <strong style="color:${sp.color}">${sp.title}</strong><br/>
               <span>Yükseklik (Y): ${sp.position.y.toFixed(1)}m</span><br/>
               <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
             </div>
-          </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
+          </div>`
         );
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
             id: sp.id,
             title: sp.title,
-            subtitle: 'Scav / Boss Spawn',
+            subtitle: 'Scav / Sniper Spawn',
             category: 'spawn',
             color: sp.color,
             position: sp.position
@@ -1006,7 +1158,44 @@
       }
     }
 
-    // 6) Çıkış (Extract) Noktaları (Resmi tarkov.dev extract_pmc / extract_scav / extract_shared İkonlarıyla)
+    if (showBossSpawns && spawnLayerGroup) {
+      for (const sp of bossSpawns) {
+        if (!sp.position) continue;
+        const latLng = window.TarkovGeo.gamePosToLatLngArray(sp.position);
+        const iconSrc = `../../assets/map-icons/${sp.iconFile || 'spawn_boss.png'}`;
+        const icon = L.divIcon({
+          className: '',
+          html: `<img src="${iconSrc}" style="width:22px;height:22px;cursor:pointer;filter:drop-shadow(0 0 4px #000);" alt="" />`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11]
+        });
+        const marker = L.marker(latLng, { icon, zIndexOffset: 310 });
+        bindSmartTooltip(
+          marker,
+          `<div style="display:flex;gap:8px;align-items:center;">
+            <img src="${iconSrc}" style="width:30px;height:30px;object-fit:contain;flex-shrink:0;" alt="" />
+            <div>
+              <strong style="color:${sp.color}">💀 ${sp.title}</strong><br/>
+              <span>Yükseklik (Y): ${sp.position.y.toFixed(1)}m</span><br/>
+              <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
+            </div>
+          </div>`
+        );
+        marker.on('click', () => {
+          window.tarkovAPI.setTarget({
+            id: sp.id,
+            title: sp.title,
+            subtitle: 'Boss / Cultist / Rogue Spawn',
+            category: 'spawn',
+            color: sp.color,
+            position: sp.position
+          });
+        });
+        marker.addTo(spawnLayerGroup);
+      }
+    }
+
+    // 6) Çıkış (Extract) Noktaları (Anahtar / Yeşil Fişek / Araç Bilgileriyle + Kutusuz Etiket)
     if (showExtracts) {
       for (const ex of extracts) {
         if (!ex.position) continue;
@@ -1014,36 +1203,43 @@
         const fac = (ex.faction || 'all').toLowerCase();
         const extIconFile = fac === 'pmc' ? 'extract_pmc.png' : fac === 'scav' ? 'extract_scav.png' : 'extract_shared.png';
         const extIconSrc = `../../assets/map-icons/${extIconFile}`;
+        const shortCondBadge = ex.requiredKey
+          ? ' <span style="color:#93c5fd">🔑</span>'
+          : ex.conditionNote && ex.conditionNote.includes('Fişek')
+          ? ' <span style="color:#4ade80">🟢</span>'
+          : '';
 
         const labelHtml = showCallouts
-          ? `<div style="display:flex;align-items:center;gap:4px;cursor:pointer;"><img src="${extIconSrc}" style="width:18px;height:18px;flex-shrink:0;filter:drop-shadow(0 0 2px #000);" alt="" /><span class="extract-label">${ex.name}</span></div>`
+          ? `<div style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;width:max-content;"><img src="${extIconSrc}" style="width:18px;height:18px;flex-shrink:0;filter:drop-shadow(0 0 2px #000);" alt="" /><span class="extract-label">${ex.name}${shortCondBadge}</span></div>`
           : `<img src="${extIconSrc}" style="width:18px;height:18px;cursor:pointer;filter:drop-shadow(0 0 2px #000);" alt="" />`;
 
         const icon = L.divIcon({
           className: '',
           html: labelHtml,
-          iconSize: [18, 18],
+          iconSize: null,
           iconAnchor: [9, 9]
         });
 
         const marker = L.marker(latLng, { icon, zIndexOffset: 400 });
-        marker.bindTooltip(
+        const previewImg = ex.requiredKey?.iconLink || extIconSrc;
+        bindSmartTooltip(
+          marker,
           `<div style="display:flex;gap:8px;align-items:center;">
-            <img src="${extIconSrc}" style="width:26px;height:26px;object-fit:contain;" alt="" />
-            <div>
+            <img src="${previewImg}" style="width:34px;height:34px;object-fit:contain;background:#0c0e12;border:1px solid #10b981;border-radius:4px;flex-shrink:0;" alt="" />
+            <div style="min-width:0;">
               <strong style="color:#10b981">Çıkış: ${ex.name}</strong> (${(ex.faction || 'all').toUpperCase()})<br/>
+              ${ex.conditionNote ? `<span style="color:#fde68a">${ex.conditionNote}</span><br/>` : ''}
               <span>Yükseklik (Y): ${ex.position.y.toFixed(1)}m</span><br/>
               <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
             </div>
-          </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
+          </div>`
         );
 
         marker.on('click', () => {
           window.tarkovAPI.setTarget({
             id: `extract_${ex.id}`,
             title: `Çıkış: ${ex.name}`,
-            subtitle: `Extract (${(ex.faction || 'all').toUpperCase()})`,
+            subtitle: ex.conditionNote || `Extract (${(ex.faction || 'all').toUpperCase()})`,
             category: 'extract',
             color: '#10b981',
             position: ex.position
@@ -1059,7 +1255,8 @@
       for (const tm of taskMarkers) {
         if (!tm.position) continue;
         const latLng = window.TarkovGeo.gamePosToLatLngArray(tm.position);
-        const borderCol = tm.isSelectedTask ? '#b57bee' : '#eab308';
+        const isVisited = visitedSet.has(tm.id);
+        const borderCol = isVisited ? '#22c55e' : tm.isSelectedTask ? '#b57bee' : '#eab308';
         const fallbackIcon = tm.questItemName
           ? '../../assets/map-icons/quest_item.png'
           : '../../assets/map-icons/quest_objective.png';
@@ -1067,29 +1264,48 @@
 
         const icon = L.divIcon({
           className: '',
-          html: `<div style="width:22px;height:22px;border-radius:5px;background:rgba(18,12,28,0.92);border:2px solid ${borderCol};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.9);" title="${tm.taskName}">
+          html: `<div style="position:relative;width:22px;height:22px;border-radius:5px;background:rgba(18,12,28,0.92);border:2px solid ${borderCol};opacity:${isVisited ? 0.58 : 1};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.9);" title="${tm.taskName}">
             <img src="${pinImg}" style="width:17px;height:17px;object-fit:contain;" alt="" />
+            ${isVisited ? '<span style="position:absolute;top:-5px;right:-5px;background:#16a34a;color:#fff;font-size:8px;font-weight:900;border-radius:50%;width:12px;height:12px;display:flex;align-items:center;justify-content:center;">✓</span>' : ''}
           </div>`,
           iconSize: [22, 22],
           iconAnchor: [11, 11]
         });
 
         const marker = L.marker(latLng, { icon, zIndexOffset: 900 });
-        const previewImg = tm.questItemImage || tm.questItemIcon || tm.taskImageLink || fallbackIcon;
+        const locImg = tm.locationImage || tm.questItemImage || tm.questItemIcon || tm.taskImageLink || fallbackIcon;
 
-        marker.bindTooltip(
-          `<div style="display:flex;gap:8px;align-items:center;max-width:320px;">
-            <img src="${previewImg}" style="width:52px;height:52px;object-fit:contain;background:#0c0e12;border:1px solid ${borderCol};border-radius:4px;flex-shrink:0;" alt="" />
-            <div>
-              <strong style="color:#c084fc">[${tm.traderName}] ${tm.taskName}</strong><br/>
-              <span>${tm.description || ''}</span><br/>
-              ${tm.questItemName ? `<span style="color:#fde68a">📦 Garanti Görev Eşyası: <strong>${tm.questItemName}</strong></span><br/>` : ''}
-              ${tm.requiredKeyName ? `<span style="color:#93c5fd">🔑 Anahtar: <strong>${tm.requiredKeyName}</strong></span><br/>` : ''}
-              <span>Kat / Yükseklik (Y): ${tm.position.y.toFixed(1)}m</span><br/>
-              <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
+        const safeTaskName = (tm.taskName || '').replace(/"/g, '&quot;');
+        const otherLocImages = (tm.allLocationImages || []).filter((img) => img && img.localPath && img.localPath !== locImg);
+
+        bindSmartTooltip(
+          marker,
+          `<div style="display:flex;flex-direction:column;gap:5px;width:270px;max-width:100%;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+              <strong style="color:#c084fc;font-size:11.5px;line-height:1.2;">[${tm.traderName}] ${tm.taskName}</strong>
+              <span style="font-size:10px;color:#94a3b8;flex-shrink:0;">${tm.position.y.toFixed(1)}m</span>
             </div>
+            ${locImg ? `
+              <div class="task-tooltip-img-wrap" data-zoom-src="${locImg}" data-zoom-caption="${safeTaskName}" title="Tam ekran büyütmek için tıkla">
+                <img src="${locImg}" class="task-preview-img" alt="" />
+                <span class="hover-zoom-hint">🔍 Tıkla: Tam Boyut</span>
+              </div>
+            ` : ''}
+            ${otherLocImages.length > 0 ? `
+              <div class="task-tooltip-gallery">
+                ${otherLocImages.map((img) => {
+                  const safeCap = (img.caption || safeTaskName).replace(/"/g, '&quot;');
+                  return `<img src="${img.localPath}" class="task-subthumb" data-zoom-src="${img.localPath}" data-zoom-caption="${safeCap}" title="${safeCap}" alt="" />`;
+                }).join('')}
+              </div>
+            ` : ''}
+            ${tm.description ? `<div style="color:#e2e8f0;font-size:10.5px;line-height:1.3;">${tm.description}</div>` : ''}
+            ${tm.questItemName ? `<div style="color:#fde68a;font-size:11px;">📦 Eşya: <strong>${tm.questItemName}</strong></div>` : ''}
+            ${tm.requiredKeyName ? `<div style="color:#93c5fd;font-size:11px;">🔑 Anahtar: <strong>${tm.requiredKeyName}</strong></div>` : ''}
+            <div style="font-size:9.5px;color:#fcd34d;margin-top:2px;">Tıklayınca güvenli rota çizer</div>
           </div>`,
-          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -10] }
+          [0, -10],
+          'task-smart-tooltip'
         );
 
         marker.on('click', () => {
@@ -1254,8 +1470,14 @@
   });
 
   window.tarkovAPI.onPlayerUpdated((playerState) => {
+    const prevVisitedCount = currentPlayerState?.visitedTargetIds?.length || 0;
     currentPlayerState = playerState;
-    renderPlayerLayer();
+    const nextVisitedCount = currentPlayerState?.visitedTargetIds?.length || 0;
+    if (prevVisitedCount !== nextVisitedCount) {
+      renderMarkers();
+    } else {
+      renderPlayerLayer();
+    }
     updatePositionTimerText();
   });
 
@@ -1264,6 +1486,52 @@
       applyZoomDelta(0.6);
     } else if (action === 'zoomOut') {
       applyZoomDelta(-0.6);
+    }
+  });
+
+  // Görsel Büyütme Modal (Lightbox)
+  const lightboxModal = document.getElementById('image-lightbox-modal');
+  const lightboxBackdrop = document.getElementById('lightbox-backdrop');
+  const lightboxImg = document.getElementById('lightbox-img');
+  const lightboxCaption = document.getElementById('lightbox-caption');
+  const btnCloseLightbox = document.getElementById('btn-close-lightbox');
+
+  function openImageLightbox(src, caption = '') {
+    if (!lightboxModal || !src) return;
+    lightboxImg.src = src;
+    if (lightboxCaption) {
+      lightboxCaption.textContent = caption;
+      lightboxCaption.style.display = caption ? 'block' : 'none';
+    }
+    lightboxModal.classList.remove('hidden');
+  }
+
+  function closeImageLightbox() {
+    if (!lightboxModal) return;
+    lightboxModal.classList.add('hidden');
+    if (lightboxImg) lightboxImg.src = '';
+  }
+
+  window.openImageLightbox = openImageLightbox;
+  window.closeImageLightbox = closeImageLightbox;
+
+  if (btnCloseLightbox) btnCloseLightbox.addEventListener('click', closeImageLightbox);
+  if (lightboxBackdrop) lightboxBackdrop.addEventListener('click', closeImageLightbox);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lightboxModal && !lightboxModal.classList.contains('hidden')) {
+      closeImageLightbox();
+    }
+  });
+
+  // Delegated Click: Tooltip içindeki ya da sayfadaki tüm büyütülebilir görsellere tıklama
+  document.addEventListener('click', (e) => {
+    const zoomTarget = e.target.closest('[data-zoom-src]');
+    if (zoomTarget) {
+      e.stopPropagation();
+      e.preventDefault();
+      const src = zoomTarget.getAttribute('data-zoom-src');
+      const caption = zoomTarget.getAttribute('data-zoom-caption') || '';
+      openImageLightbox(src, caption);
     }
   });
 })();

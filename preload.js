@@ -23,10 +23,13 @@ contextBridge.exposeInMainWorld('tarkovAPI', {
   getAutoHomeState: () => ipcRenderer.invoke('autohome:get'),
   toggleAutoHome: (forceState) => ipcRenderer.invoke('autohome:toggle', forceState),
 
-  // Aşama 4: Hedef Seçimi & Rota
+  // Aşama 4: Hedef Seçimi & Rota & Zincirleme Rotasyon
   setTarget: (targetObj) => ipcRenderer.invoke('target:set', targetObj),
   nextTarget: () => ipcRenderer.invoke('target:next'),
   clearTarget: () => ipcRenderer.invoke('target:clear'),
+  clearVisitedTargets: () => ipcRenderer.invoke('target:clearVisited'),
+  startRotation: (opts) => ipcRenderer.invoke('target:startRotation', opts),
+  getLatestScreenshotDataUrl: () => ipcRenderer.invoke('screenshot:getLatestDataUrl'),
 
   // Fare Üzerine Gelince Harita Etkileşimi
   setHoverInteractive: (interactive) => ipcRenderer.invoke('overlay:setHoverInteractive', interactive),

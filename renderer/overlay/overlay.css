@@ -35,18 +35,32 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 8px;
+  padding: 4px 6px;
   background: rgba(22, 25, 32, 0.96);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   font-size: 11px;
   -webkit-app-region: drag;
   z-index: 1000;
+  overflow: hidden;
 }
 
-.header-left, .header-right, .header-center {
+.header-left, .header-right {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: center;
 }
 
 .badge {
@@ -203,32 +217,54 @@ html, body {
   box-shadow: 0 0 5px rgba(0, 0, 0, 0.9);
 }
 
-/* Harita Üzerindeki Konum İsimleri (Callouts & Çıkış Etiketleri) */
+/* Leaflet varsayılan div-icon kutularını tamamen şeffaf yap */
+.leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Harita Üzerindeki Konum İsimleri (Callouts & Çıkış Etiketleri — Kutusuz, Temiz Konturlu Metin) */
 .callout-label {
-  background: rgba(12, 14, 19, 0.78);
-  color: #fde68a;
-  border: 1px solid rgba(214, 182, 120, 0.55);
-  border-radius: 3px;
-  padding: 1px 4px;
-  font-size: 9.5px;
-  font-weight: 700;
+  display: inline-block;
+  width: max-content;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #fef08a;
+  padding: 0;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
   white-space: nowrap;
-  pointer-events: none;
-  text-shadow: 0 1px 2px #000;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  text-shadow:
+    -1px -1px 0 #000,
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000,
+     0    2px 4px rgba(0, 0, 0, 0.95);
 }
 
 .extract-label {
-  background: rgba(6, 78, 59, 0.85);
-  color: #a7f3d0;
-  border: 1px solid rgba(16, 185, 129, 0.65);
-  border-radius: 3px;
-  padding: 1px 4px;
-  font-size: 9px;
-  font-weight: 700;
+  display: inline-block;
+  width: max-content;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: #6ee7b7;
+  padding: 0;
+  font-size: 9.5px;
+  font-weight: 800;
   white-space: nowrap;
   pointer-events: none;
-  text-shadow: 0 1px 2px #000;
+  text-shadow:
+    -1px -1px 0 #000,
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000,
+     0    2px 4px rgba(0, 0, 0, 0.95);
 }
 
 /* Aşama 5: Görev Hedefi Pinleri */
@@ -275,15 +311,123 @@ html, body {
   box-shadow: 0 0 4px rgba(56, 189, 248, 0.5);
 }
 
-/* Leaflet Tooltip Koyu Tema */
+/* Leaflet Tooltip Koyu Tema (Taşmayan Otomatik Satır Kaydırmalı) */
 .leaflet-tooltip.tarkov-tooltip {
-  background: rgba(15, 18, 24, 0.95);
+  background: rgba(15, 18, 24, 0.96);
   border: 1px solid #c8a45d;
   color: #f1f5f9;
   font-size: 11px;
-  padding: 5px 8px;
+  line-height: 1.35;
+  padding: 6px 8px;
+  border-radius: 6px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.85);
+  white-space: normal !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  width: max-content;
+  max-width: 250px;
+}
+
+.leaflet-tooltip.tarkov-tooltip.task-smart-tooltip {
+  max-width: 285px;
+  border-color: #a855f7;
+  padding: 8px 10px;
+}
+
+/* Tooltip ve Marker arasındaki boşluğu dolduran görünmez köprü (fare kayınca aniden kapanmayı önler) */
+.leaflet-tooltip.tarkov-tooltip::before {
+  content: '';
+  position: absolute;
+  inset: -18px -18px -18px -18px;
+  z-index: -1;
+  pointer-events: auto;
+}
+
+/* Görev İkonu Üzerine Gelince Büyütülebilen Konum Görseli */
+.task-tooltip-img-wrap {
+  position: relative;
+  width: 100%;
+  height: 130px;
+  overflow: hidden;
+  border-radius: 6px;
+  border: 1.5px solid rgba(168, 85, 247, 0.8);
+  background: #090d14;
+  cursor: zoom-in;
+  margin: 4px 0 2px 0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.7);
+}
+
+.task-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), filter 0.25s ease;
+}
+
+.task-tooltip-img-wrap:hover .task-preview-img {
+  transform: scale(1.18);
+  filter: brightness(1.1);
+}
+
+.hover-zoom-hint {
+  position: absolute;
+  bottom: 5px;
+  right: 6px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.5);
   border-radius: 4px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 2px 6px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.task-tooltip-gallery {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.task-subthumb {
+  width: 54px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1.5px solid rgba(168, 85, 247, 0.55);
+  cursor: zoom-in;
+  transition: transform 0.18s ease, border-color 0.18s ease;
+  flex-shrink: 0;
+}
+
+.task-subthumb:hover {
+  transform: scale(1.15);
+  border-color: #38bdf8;
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.5);
+}
+
+.tour-step-badge {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0284c7;
+  color: #ffffff;
+  border: 1.5px solid #e0f2fe;
+  font-size: 9px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 6px rgba(2, 132, 199, 0.95);
+  pointer-events: none;
 }
 
 .map-loading {
@@ -393,4 +537,98 @@ html, body {
   border: 2px solid #f43f5e;
   background: rgba(244, 63, 94, 0.25);
   box-shadow: 0 0 10px rgba(244, 63, 94, 0.9);
+}
+
+/* Görsel Büyütme Modal (Lightbox) */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.image-lightbox.hidden {
+  display: none !important;
+}
+
+.lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 7, 12, 0.92);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.lightbox-content {
+  position: relative;
+  z-index: 2;
+  max-width: 92vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: lightboxPop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes lightboxPop {
+  from {
+    transform: scale(0.92);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+#lightbox-img {
+  max-width: 90vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 2px solid rgba(56, 189, 248, 0.7);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.95);
+  background: #090d14;
+}
+
+.lightbox-caption {
+  margin-top: 12px;
+  color: #f8fafc;
+  font-size: 13.5px;
+  font-weight: 700;
+  background: rgba(15, 23, 42, 0.9);
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7);
+  max-width: 85vw;
+  text-align: center;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  font-size: 18px;
+  font-weight: 900;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.75);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.lightbox-close:hover {
+  background: #dc2626;
+  transform: scale(1.12);
 }

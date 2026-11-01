@@ -190,6 +190,7 @@
   const chkShowExtracts = document.getElementById('chk-show-extracts');
   const chkShowPmcSpawns = document.getElementById('chk-show-pmc-spawns');
   const chkShowScavSpawns = document.getElementById('chk-show-scav-spawns');
+  const chkShowBossSpawns = document.getElementById('chk-show-boss-spawns');
   const chkShowHazards = document.getElementById('chk-show-hazards');
   const chkShowLocks = document.getElementById('chk-show-locks');
   const chkShowUtilities = document.getElementById('chk-show-utilities');
@@ -300,6 +301,7 @@
       chkShowExtracts,
       chkShowPmcSpawns,
       chkShowScavSpawns,
+      chkShowBossSpawns,
       chkShowHazards,
       chkShowLocks,
       chkShowUtilities,
@@ -570,11 +572,18 @@
     ]);
 
     if (tasksRes && tasksRes.ok) {
-      allTasks = (tasksRes.tasks || []).map((t) => ({
-        ...t,
-        _normName: normalizeTr(t.name),
-        _normTrader: normalizeTr(t.trader?.name)
-      }));
+      allTasks = (tasksRes.tasks || []).map((t) => {
+        const objDesc = (t.objectives || []).map((o) => `${o.description || ''} ${o.questItem?.name || ''} ${o.markerItem?.name || ''}`).join(' ');
+        const keyNames = (t.neededKeys || []).flatMap((nk) => (nk.keys || []).map((k) => `${k.name || ''} ${k.shortName || ''}`)).join(' ');
+        const locCaptions = (t.locationImages || []).map((img) => img.caption || '').join(' ');
+        const mapNames = `${t.map?.name || ''} ${t.map?.normalizedName || ''}`;
+
+        return {
+          ...t,
+          _normName: `${normalizeTr(t.name)} ${normalizeTr(t.normalizedName || '')} ${normalizeTr(t.wikiLink ? t.wikiLink.split('/').pop() : '')} ${normalizeTr(mapNames)} ${normalizeTr(objDesc)} ${normalizeTr(keyNames)} ${normalizeTr(locCaptions)}`,
+          _normTrader: normalizeTr(t.trader?.name)
+        };
+      });
       if (window.Fuse) {
         fuseTasks = new window.Fuse(allTasks, {
           keys: ['name', 'normalizedName', '_normName'],
@@ -737,6 +746,7 @@
         <div class="task-title-wrap">
           <div class="task-title-line">
             <span class="task-name">${task.name}</span>
+            ${task.normalizedName && task.name !== task.normalizedName ? `<span class="muted" style="font-size:11px;">(${task.normalizedName})</span>` : ''}
             ${isSelected ? '<span class="chip chip-accent">✓ Seçildi</span>' : ''}
             ${isTaskCompleted ? '<span class="chip chip-ok">✓ Yapıldı</span>' : ''}
           </div>
@@ -756,6 +766,18 @@
           </button>
         </div>
       </div>
+      ${Array.isArray(task.locationImages) && task.locationImages.length > 0 ? `
+        <div class="task-locations-gallery" style="display:flex;gap:8px;padding:6px 12px;background:rgba(15,23,42,0.7);overflow-x:auto;border-bottom:1px solid var(--border);">
+          ${task.locationImages.map(img => {
+            const safeCaption = (img.caption || task.name || '').replace(/"/g, '&quot;');
+            return `
+            <div style="flex-shrink:0;max-width:140px;cursor:zoom-in;" title="Büyütmek için tıkla: ${safeCaption}" data-zoom-src="${img.localPath}" data-zoom-caption="${safeCaption}">
+              <img src="${img.localPath}" style="width:140px;height:78px;object-fit:cover;border-radius:4px;border:1px solid rgba(56,189,248,0.5);transition:transform 0.15s;display:block;" onmouseover="this.style.transform='scale(1.03)'" onmouseout="this.style.transform='scale(1)'" alt="" />
+              <div style="font-size:10px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;">🔍 ${safeCaption}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      ` : ''}
       <div class="task-reqs-holder"></div>
       <div class="task-obj-list"></div>
     `;
@@ -817,15 +839,39 @@
       const row = document.createElement('div');
       row.className = `task-obj-row ${isDone ? 'completed' : ''}`;
 
+      const objItemImg =
+        obj.questItem?.image512pxLink ||
+        obj.questItem?.iconLink ||
+        (obj.items && obj.items[0] && obj.items[0].iconLink) ||
+        obj.markerItem?.iconLink ||
+        null;
+      const objItemName =
+        obj.questItem?.name ||
+        (obj.items && obj.items[0] && obj.items[0].name) ||
+        obj.markerItem?.name ||
+        null;
+
+      const safeObjItemName = (objItemName || task.name || '').replace(/"/g, '&quot;');
+      const itemThumbHtml = objItemImg
+        ? `<img src="${objItemImg}" class="task-obj-item-thumb" data-zoom-src="${objItemImg}" data-zoom-caption="${safeObjItemName}" title="Büyütmek için tıkla: ${safeObjItemName}" alt="" style="cursor:zoom-in;" loading="lazy" />`
+        : '';
+      const itemTagHtml = obj.questItem?.name
+        ? `<div style="font-size:11px;color:#fde68a;margin-top:2px;">📦 Alınacak / Bırakılacak Görev Eşyası: <strong>${obj.questItem.name}</strong></div>`
+        : '';
+
       const firBadge = obj.foundInRaid ? `<span class="chip chip-warn tabular-nums">FIR ×${obj.count || 1}</span> ` : '';
       const locHtml = pos
         ? `<button type="button" class="btn btn-secondary btn-obj-route tabular-nums" title="Bu hedefe rota çiz">Rota Yap (${pos.y.toFixed(0)}m)</button>`
         : `<span class="chip chip-neutral" aria-label="Bu hedef için harita konumu bulunmuyor">Konum yok</span>`;
 
       row.innerHTML = `
-        <label class="task-obj-label">
+        <label class="task-obj-label" style="display:flex;align-items:center;gap:8px;">
           <input type="checkbox" class="chk-obj-done" ${isDone ? 'checked' : ''} />
-          <span>${firBadge}${obj.description || obj.type}</span>
+          ${itemThumbHtml}
+          <div>
+            <span>${firBadge}${obj.description || obj.type}</span>
+            ${itemTagHtml}
+          </div>
         </label>
         ${locHtml}
       `;
@@ -990,7 +1036,8 @@
       if (modeFilter === 'only_completed' && !isDoneTask) return false;
       if (!q) return true;
       const inObj = (t.objectives || []).some((o) => normalizeTr(o.description).includes(q));
-      return t._normName.includes(q) || t._normTrader.includes(q) || inObj;
+      const inEn = (t.normalizedName || '').toLowerCase().includes(q) || (t.wikiLink || '').toLowerCase().includes(q);
+      return t._normName.includes(q) || t._normTrader.includes(q) || inObj || inEn;
     });
 
     filtered.sort((a, b) => {
@@ -1292,6 +1339,7 @@
     chkShowExtracts.checked = settings.showMapExtracts !== false;
     if (chkShowPmcSpawns) chkShowPmcSpawns.checked = !!settings.showPmcSpawns;
     if (chkShowScavSpawns) chkShowScavSpawns.checked = !!settings.showScavSpawns;
+    if (chkShowBossSpawns) chkShowBossSpawns.checked = !!settings.showBossSpawns;
     if (chkShowHazards) chkShowHazards.checked = settings.showMapHazards !== false;
     if (chkShowLocks) chkShowLocks.checked = !!settings.showMapLocks;
     if (chkShowUtilities) chkShowUtilities.checked = settings.showMapUtilities !== false;
@@ -1332,6 +1380,13 @@
     if (chkAutoDetectLogs) chkAutoDetectLogs.checked = settings.autoDetectMapFromLogs !== false;
     chkAutoDetectMap.checked = !!settings.autoDetectMapFromCoords;
     chkAutoNearestTarget.checked = !!settings.autoNearestTarget;
+    const chkAutoRotationEl = document.getElementById('chk-auto-rotation');
+    if (chkAutoRotationEl) chkAutoRotationEl.checked = settings.autoRotationEnabled !== false;
+    const rotCatSet = new Set(settings.rotationCategories || ['task', 'container', 'loot']);
+    document.querySelectorAll('.chk-rot-cat').forEach((chk) => {
+      const cat = chk.dataset.rot;
+      if (cat) chk.checked = rotCatSet.has(cat);
+    });
     selectAutoHomeInterval.value = String(settings.autoHomeIntervalMs || 1000);
 
     const yOff = settings.yawOffset || 0;
@@ -1536,6 +1591,7 @@
       showMapExtracts: chkShowExtracts.checked,
       showPmcSpawns: chkShowPmcSpawns ? chkShowPmcSpawns.checked : false,
       showScavSpawns: chkShowScavSpawns ? chkShowScavSpawns.checked : false,
+      showBossSpawns: chkShowBossSpawns ? chkShowBossSpawns.checked : false,
       showMapHazards: chkShowHazards ? chkShowHazards.checked : true,
       showMapLocks: chkShowLocks ? chkShowLocks.checked : false,
       showMapUtilities: chkShowUtilities ? chkShowUtilities.checked : true,
@@ -1561,6 +1617,7 @@
     chkShowExtracts,
     chkShowPmcSpawns,
     chkShowScavSpawns,
+    chkShowBossSpawns,
     chkShowHazards,
     chkShowLocks,
     chkShowUtilities,
@@ -1593,6 +1650,7 @@
         chkShowExtracts,
         chkShowPmcSpawns,
         chkShowScavSpawns,
+        chkShowBossSpawns,
         chkShowHazards,
         chkShowLocks,
         chkShowUtilities,
@@ -1619,6 +1677,7 @@
         chkShowExtracts,
         chkShowPmcSpawns,
         chkShowScavSpawns,
+        chkShowBossSpawns,
         chkShowHazards,
         chkShowLocks,
         chkShowUtilities,
@@ -1818,12 +1877,609 @@
       if (item.type && item.type.startsWith('image/')) {
         const blob = item.getAsFile();
         if (blob) {
-          processTaskScreenshotOCR(blob);
+          if (currentActiveTabId === 'tab-inventory') {
+            loadInventoryScreenshotBlob(blob);
+          } else {
+            processTaskScreenshotOCR(blob);
+          }
         }
         break;
       }
     }
   });
+
+  // ============================================================================
+  // OTOMATİK ZİNCİRLEME ROTASYON (GÖREV / LOOT KUTUSU / EŞYA) KONTROLLERİ
+  // ============================================================================
+  const chkAutoRotation = document.getElementById('chk-auto-rotation');
+  const rotCatCheckboxes = Array.from(document.querySelectorAll('.chk-rot-cat'));
+  const btnStartRotation = document.getElementById('btn-start-rotation');
+  const btnResetRotation = document.getElementById('btn-reset-rotation');
+  const btnRouteNearestContainer = document.getElementById('btn-route-nearest-container');
+  const btnStartTaskRotation = document.getElementById('btn-start-task-rotation');
+
+  function saveRotationSettings() {
+    const rotationCategories = rotCatCheckboxes
+      .filter((c) => c.checked && c.dataset.rot)
+      .map((c) => c.dataset.rot);
+    window.tarkovAPI.updateSettings({
+      autoRotationEnabled: chkAutoRotation ? chkAutoRotation.checked : true,
+      rotationCategories
+    });
+  }
+
+  if (chkAutoRotation) {
+    chkAutoRotation.addEventListener('change', saveRotationSettings);
+  }
+  rotCatCheckboxes.forEach((chk) => {
+    chk.addEventListener('change', saveRotationSettings);
+  });
+
+  if (btnStartRotation) {
+    btnStartRotation.addEventListener('click', async () => {
+      const rotationCategories = rotCatCheckboxes
+        .filter((c) => c.checked && c.dataset.rot)
+        .map((c) => c.dataset.rot);
+      const res = await window.tarkovAPI.startRotation({ categories: rotationCategories });
+      if (res && res.tour && res.tour.length > 0) {
+        showToast(`Zincirleme rotasyon başlatıldı (${res.tour.length} hedef sıraya alındı)`, 'ok');
+      } else {
+        showToast('Haritada seçili kriterlere uygun hedef bulunamadı', 'warn');
+      }
+    });
+  }
+
+  if (btnResetRotation) {
+    btnResetRotation.addEventListener('click', async () => {
+      await window.tarkovAPI.clearVisitedTargets();
+      showToast('Gezilen (✓) hedefler sıfırlandı, rotasyon baştan hesaplandı', 'info');
+    });
+  }
+
+  if (btnRouteNearestContainer) {
+    btnRouteNearestContainer.addEventListener('click', async () => {
+      const enabledCats = containerCatCheckboxes.filter((c) => c.checked).map((c) => c.dataset.cat);
+      if (enabledCats.length === 0) {
+        showToast('Önce en az bir Loot Kutusu kategorisi işaretleyin', 'warn');
+        return;
+      }
+      if (chkAutoRotation) chkAutoRotation.checked = true;
+      rotCatCheckboxes.forEach((c) => {
+        c.checked = c.dataset.rot === 'container';
+      });
+      await window.tarkovAPI.clearVisitedTargets();
+      const res = await window.tarkovAPI.startRotation({ categories: ['container'] });
+      if (res && res.tour && res.tour.length > 0) {
+        showToast(
+          `En yakın kutuya rota çizildi: ${res.activeTarget?.title || 'Kutu'} (Toplam ${res.tour.length} kutu zincirde)`,
+          'ok'
+        );
+      } else {
+        showToast('Bu haritada seçili kategoride kutu bulunamadı', 'warn');
+      }
+    });
+  }
+
+  if (btnStartTaskRotation) {
+    btnStartTaskRotation.addEventListener('click', async () => {
+      if (chkAutoRotation) chkAutoRotation.checked = true;
+      rotCatCheckboxes.forEach((c) => {
+        c.checked = c.dataset.rot === 'task' || c.dataset.rot === 'extract';
+      });
+      await window.tarkovAPI.clearVisitedTargets();
+      const res = await window.tarkovAPI.startRotation({ categories: ['task', 'extract'] });
+      if (res && res.tour && res.tour.length > 0) {
+        showToast(
+          `Seçili görevler için en kısa rotasyon başlatıldı (${res.tour.length} durak)`,
+          'ok'
+        );
+      } else {
+        showToast('Önce bu haritada en az bir görev seçin veya Haritanın Tüm Görevlerini açın', 'warn');
+      }
+    });
+  }
+
+  // ============================================================================
+  // ENVANTER GÖRSELİ DEĞER ANALİZİ (FLEA MARKET VS TÜCCAR ÇİZİM MODÜLÜ)
+  // ============================================================================
+  const invCanvas = document.getElementById('inv-annotator-canvas');
+  const invDropzone = document.getElementById('inv-dropzone');
+  const btnInvCaptureLatest = document.getElementById('btn-inv-capture-latest');
+  const btnInvBrowse = document.getElementById('btn-inv-browse');
+  const btnInvDownload = document.getElementById('btn-inv-download');
+  const btnInvClear = document.getElementById('btn-inv-clear');
+  const inputInvFile = document.getElementById('input-inv-file');
+  const inputInvItemSearch = document.getElementById('input-inv-item-search');
+  const invQuickResults = document.getElementById('inv-quick-search-results');
+  const invStatusLine = document.getElementById('inv-status-line');
+  const invDetectedList = document.getElementById('inv-detected-list');
+  const invTotalValueEl = document.getElementById('inv-total-value');
+  const invTotalCountEl = document.getElementById('inv-total-count');
+  const invFleaValueEl = document.getElementById('inv-flea-value');
+  const invFleaCountEl = document.getElementById('inv-flea-count');
+  const invTraderValueEl = document.getElementById('inv-trader-value');
+  const invTraderCountEl = document.getElementById('inv-trader-count');
+  const invModeChip = document.getElementById('inv-mode-chip');
+
+  let invBaseImage = null;
+  let invAnnotations = []; // [{ id, item, x, y, w, h, count, sellType: 'flea'|'trader', netFlea, traderPrice, traderName, iconImg }]
+  let selectedBrushItem = null;
+  const loadedIconCache = new Map();
+
+  function evaluateItemFleaVsTrader(item) {
+    const fleaRaw = Number(item.fleaPrice) || 0;
+    // Tarkov Flea Market komisyon tahmini (~%8-%10)
+    const estFee = Math.round(fleaRaw * 0.085);
+    const netFlea = Math.max(0, fleaRaw - estFee);
+    const traderPrice = Number(item.bestTrader?.priceRUB) || 0;
+    const traderName = item.bestTrader?.name || 'Trader';
+
+    const sellType = netFlea > traderPrice + 1500 ? 'flea' : 'trader';
+    const bestNetPrice = sellType === 'flea' ? netFlea : traderPrice;
+    const diffProfit = Math.abs(netFlea - traderPrice);
+
+    return {
+      sellType,
+      fleaRaw,
+      netFlea,
+      traderPrice,
+      traderName,
+      bestNetPrice,
+      diffProfit
+    };
+  }
+
+  function loadCachedImage(src) {
+    return new Promise((resolve) => {
+      if (!src) return resolve(null);
+      if (loadedIconCache.has(src)) return resolve(loadedIconCache.get(src));
+      const img = new Image();
+      img.onload = () => {
+        loadedIconCache.set(src, img);
+        resolve(img);
+      };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  async function addInventoryAnnotation(item, box = null) {
+    if (!item || !invCanvas) return;
+    const ev = evaluateItemFleaVsTrader(item);
+    const iconImg = await loadCachedImage(item.iconLink);
+
+    const slotW = Math.max(68, Math.min(180, (item.width || 1) * 62));
+    const slotH = Math.max(62, Math.min(180, (item.height || 1) * 62));
+
+    let x = box?.x;
+    let y = box?.y;
+    const w = box?.w || slotW;
+    const h = box?.h || slotH;
+
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      // Otomatik ızgara yerleşimi (Üst banner'ın altından başlar)
+      const idx = invAnnotations.length;
+      const cols = Math.max(1, Math.floor((invCanvas.width - 40) / 155));
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      x = 24 + col * 152;
+      y = 78 + row * 92;
+    }
+
+    invAnnotations.push({
+      id: `inv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      item,
+      x: Math.max(8, Math.min(invCanvas.width - w - 8, x)),
+      y: Math.max(62, Math.min(invCanvas.height - h - 8, y)),
+      w,
+      h,
+      count: 1,
+      ...ev,
+      iconImg
+    });
+
+    renderInventoryCanvasAndList();
+  }
+
+  function renderInventoryCanvasAndList() {
+    if (!invCanvas) return;
+    const ctx = invCanvas.getContext('2d');
+    const W = invCanvas.width;
+    const H = invCanvas.height;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // 1) Arka Plan: Yüklenen Oyun Ekran Görüntüsü veya Tarkov Stash Izgarası
+    if (invBaseImage) {
+      ctx.drawImage(invBaseImage, 0, 0, W, H);
+    } else {
+      ctx.fillStyle = '#0b0e14';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.08)';
+      ctx.lineWidth = 1;
+      for (let gx = 0; gx < W; gx += 64) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 58);
+        ctx.lineTo(gx, H);
+        ctx.stroke();
+      }
+      for (let gy = 58; gy < H; gy += 64) {
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(W, gy);
+        ctx.stroke();
+      }
+      if (invAnnotations.length === 0) {
+        ctx.fillStyle = 'rgba(203, 213, 225, 0.45)';
+        ctx.font = '600 15px Inter, Segoe UI, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          '📸 Oyundaki Envanter Ekran Görüntüsünü Yapıştırın (Ctrl+V) veya "Son Ekran Görüntüsünü Çek" Butonuna Tıklayın',
+          W / 2,
+          H / 2 - 10
+        );
+        ctx.font = '13px Inter, Segoe UI, sans-serif';
+        ctx.fillText(
+          'Görselin üzerine Flea Market (Yeşil) / Tüccar (Altın) kutuları ve Toplam Envanter Değeri otomatik çizilir.',
+          W / 2,
+          H / 2 + 18
+        );
+      }
+    }
+
+    // Toplam Değerleri Hesapla
+    let totalNet = 0;
+    let fleaTotal = 0;
+    let fleaCount = 0;
+    let traderTotal = 0;
+    let traderCount = 0;
+
+    for (const ann of invAnnotations) {
+      const qty = ann.count || 1;
+      totalNet += ann.bestNetPrice * qty;
+      if (ann.sellType === 'flea') {
+        fleaTotal += ann.netFlea * qty;
+        fleaCount += qty;
+      } else {
+        traderTotal += ann.traderPrice * qty;
+        traderCount += qty;
+      }
+    }
+
+    // 2) Görselin En Üstüne Doğrudan "TOPLAM ENVANTER DEĞERİ" HUD Banner'ı Çiz
+    ctx.fillStyle = 'rgba(10, 13, 19, 0.92)';
+    ctx.fillRect(0, 0, W, 54);
+    ctx.strokeStyle = '#c8a45d';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(0, 54);
+    ctx.lineTo(W, 54);
+    ctx.stroke();
+
+    const modeTxt = currentSettings?.gameMode === 'pve' ? 'PvE' : 'PvP';
+    ctx.textAlign = 'left';
+    ctx.font = '800 16px Inter, Segoe UI, sans-serif';
+    ctx.fillStyle = '#fde047';
+    ctx.fillText(`💰 TOPLAM ENVANTER DEĞERİ (${modeTxt}): ${formatRub(totalNet)}`, 16, 24);
+
+    ctx.font = '700 12.5px Inter, Segoe UI, sans-serif';
+    ctx.fillStyle = '#4ade80';
+    ctx.fillText(`🟢 FLEA MARKET'E KOY (${fleaCount} adet): ${formatRub(fleaTotal)}`, 16, 44);
+
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillText(`🟡 TÜCCARA SAT (${traderCount} adet): ${formatRub(traderTotal)}`, 390, 44);
+
+    // 3) Her Eşya İçin Görsel Üzerine Kutu, İkon ve "FLEA vs TÜCCAR" Etiketi Çiz
+    for (const ann of invAnnotations) {
+      const isFlea = ann.sellType === 'flea';
+      const strokeCol = isFlea ? '#22c55e' : '#f59e0b';
+      const fillCol = isFlea ? 'rgba(22, 163, 74, 0.20)' : 'rgba(217, 119, 6, 0.20)';
+      const badgeBg = isFlea ? 'rgba(6, 78, 59, 0.94)' : 'rgba(120, 53, 15, 0.94)';
+
+      // Kutu dolgusu ve çerçevesi
+      ctx.fillStyle = fillCol;
+      ctx.fillRect(ann.x, ann.y, ann.w, ann.h);
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = 2.4;
+      ctx.strokeRect(ann.x, ann.y, ann.w, ann.h);
+
+      // Eşya ikonu varsa sol üste çiz
+      if (ann.iconImg) {
+        const iconSz = Math.min(34, ann.h - 22);
+        if (iconSz >= 18) {
+          ctx.drawImage(ann.iconImg, ann.x + 4, ann.y + 4, iconSz, iconSz);
+        }
+      }
+
+      // Kısa isim + adet
+      ctx.textAlign = 'left';
+      ctx.font = '800 11.5px Inter, Segoe UI, sans-serif';
+      ctx.fillStyle = '#ffffff';
+      const titleStr = `${ann.item.shortName || ann.item.name}${ann.count > 1 ? ` ×${ann.count}` : ''}`;
+      ctx.fillText(titleStr, ann.x + (ann.iconImg ? 40 : 6), ann.y + 16);
+
+      // Alt Satış Kararı Şeridi (FLEA MARKET vs TÜCCAR)
+      const pillH = 20;
+      const pillY = ann.y + ann.h - pillH;
+      ctx.fillStyle = badgeBg;
+      ctx.fillRect(ann.x, pillY, ann.w, pillH);
+
+      ctx.font = '800 10.5px Inter, Segoe UI, sans-serif';
+      ctx.fillStyle = isFlea ? '#86efac' : '#fde68a';
+      const actionLabel = isFlea
+        ? `FLEA: ${formatRub(ann.netFlea * (ann.count || 1))}`
+        : `${ann.traderName.toUpperCase()}: ${formatRub(ann.traderPrice * (ann.count || 1))}`;
+      ctx.fillText(actionLabel, ann.x + 5, pillY + 14);
+    }
+
+    // KPI Kartlarını Güncelle
+    if (invTotalValueEl) invTotalValueEl.textContent = totalNet > 0 ? formatRub(totalNet) : '0 ₽';
+    if (invTotalCountEl) invTotalCountEl.textContent = `${fleaCount + traderCount} eşya işaretlendi`;
+    if (invFleaValueEl) invFleaValueEl.textContent = fleaTotal > 0 ? formatRub(fleaTotal) : '0 ₽';
+    if (invFleaCountEl) invFleaCountEl.textContent = `${fleaCount} eşya Flea Market'te daha kârlı`;
+    if (invTraderValueEl) invTraderValueEl.textContent = traderTotal > 0 ? formatRub(traderTotal) : '0 ₽';
+    if (invTraderCountEl) invTraderCountEl.textContent = `${traderCount} eşya Tüccarda daha kârlı`;
+    if (invModeChip) invModeChip.textContent = modeTxt;
+
+    // Sağ Listeyi Güncelle
+    if (invDetectedList) {
+      if (invAnnotations.length === 0) {
+        invDetectedList.innerHTML = `<span class="muted">Henüz eşya eklenmedi. Ekran görüntüsü yapıştırın (<kbd>Ctrl+V</kbd>) veya yukarıdan eşya arayıp seçin.</span>`;
+      } else {
+        invDetectedList.innerHTML = '';
+        invAnnotations.forEach((ann, idx) => {
+          const isFlea = ann.sellType === 'flea';
+          const row = document.createElement('div');
+          row.className = `inv-item-row ${isFlea ? 'sell-flea' : 'sell-trader'}`;
+          row.innerHTML = `
+            <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+              <img src="${ann.item.iconLink || ''}" style="width:32px;height:32px;object-fit:contain;background:#090b10;border-radius:4px;" alt="" />
+              <div style="min-width:0;">
+                <div style="font-weight:700;color:var(--text-1);">${ann.item.name} <span class="muted">(${ann.item.shortName || ''})</span></div>
+                <div style="font-size:11px;color:${isFlea ? '#4ade80' : '#fbbf24'};font-weight:700;">
+                  ${isFlea ? `🟢 FLEA MARKET: ${formatRub(ann.netFlea)} (Tüccar: ${formatRub(ann.traderPrice)})` : `🟡 TÜCCAR (${ann.traderName}): ${formatRub(ann.traderPrice)} (Flea: ${formatRub(ann.netFlea)})`}
+                </div>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+              <button type="button" class="btn btn-ghost btn-inv-qty" style="padding:2px 6px;font-size:11px;" title="Adet artır">×${ann.count || 1} ＋</button>
+              <button type="button" class="btn btn-ghost btn-danger-text btn-inv-del" style="padding:2px 6px;font-size:11px;" title="Kaldır">✕</button>
+            </div>
+          `;
+          row.querySelector('.btn-inv-qty').addEventListener('click', () => {
+            ann.count = (ann.count || 1) + 1;
+            renderInventoryCanvasAndList();
+          });
+          row.querySelector('.btn-inv-del').addEventListener('click', () => {
+            invAnnotations.splice(idx, 1);
+            renderInventoryCanvasAndList();
+          });
+          invDetectedList.appendChild(row);
+        });
+      }
+    }
+  }
+
+  function renderQuickInventorySearchChips() {
+    if (!invQuickResults || allItems.length === 0) return;
+    const q = normalizeTr(inputInvItemSearch ? inputInvItemSearch.value : '');
+    let matches = [];
+    if (!q) {
+      matches = allItems
+        .slice()
+        .sort((a, b) => (b.bestOverallPrice || 0) - (a.bestOverallPrice || 0))
+        .slice(0, 10);
+    } else {
+      matches = allItems
+        .filter((it) => it._normName?.includes(q) || it._normShort?.includes(q))
+        .sort((a, b) => (b.bestOverallPrice || 0) - (a.bestOverallPrice || 0))
+        .slice(0, 12);
+    }
+
+    invQuickResults.innerHTML = '';
+    for (const item of matches) {
+      const ev = evaluateItemFleaVsTrader(item);
+      const isSelectedBrush = selectedBrushItem && selectedBrushItem.id === item.id;
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = `inv-quick-chip ${isSelectedBrush ? 'selected-brush' : ''}`;
+      chip.innerHTML = `
+        <img src="${item.iconLink || ''}" style="width:20px;height:20px;object-fit:contain;" alt="" />
+        <span><strong>${item.shortName || item.name}</strong></span>
+        <span style="color:${ev.sellType === 'flea' ? '#4ade80' : '#fbbf24'};font-weight:700;">
+          ${ev.sellType === 'flea' ? '🟢 Flea' : `🟡 ${ev.traderName}`}: ${formatRub(ev.bestNetPrice)}
+        </span>
+      `;
+      chip.title = 'Tıklayınca görsele ekler ve fırça olarak seçer (Görselde istediğiniz slota tıklayarak da yerleştirebilirsiniz)';
+      chip.addEventListener('click', () => {
+        selectedBrushItem = item;
+        renderQuickInventorySearchChips();
+        addInventoryAnnotation(item);
+        if (invStatusLine) {
+          invStatusLine.textContent = `Seçili Fırça: "${item.name}" — Görsel üzerinde istediğiniz envanter slotuna tıklayarak kutuyu o noktaya taşıyabilir veya yeni kutu ekleyebilirsiniz.`;
+        }
+      });
+      invQuickResults.appendChild(chip);
+    }
+  }
+
+  async function runInventoryImageOCR(imgElement) {
+    if (!window.Tesseract || !allItems || allItems.length === 0) return;
+    if (invStatusLine) {
+      invStatusLine.textContent = '🔍 Görseldeki eşya kısa adları (OCR) taranıyor ve Flea/Tüccar fiyatları hesaplanıyor...';
+    }
+    try {
+      const res = await window.Tesseract.recognize(imgElement, 'eng');
+      const words = res?.data?.words || [];
+      const shortMap = new Map();
+      for (const it of allItems) {
+        if (it.shortName && it.shortName.length >= 2) {
+          const key = it.shortName.toLowerCase().trim();
+          const ex = shortMap.get(key);
+          if (!ex || (it.bestOverallPrice || 0) > (ex.bestOverallPrice || 0)) {
+            shortMap.set(key, it);
+          }
+        }
+      }
+
+      let foundCount = 0;
+      const placedPositions = [];
+      for (const w of words) {
+        const clean = String(w.text || '')
+          .replace(/[^a-zA-Z0-9-]/g, '')
+          .toLowerCase()
+          .trim();
+        if (clean.length < 2) continue;
+        const matchedItem = shortMap.get(clean);
+        if (matchedItem && w.bbox) {
+          const bx = Math.round((w.bbox.x0 / imgElement.width) * invCanvas.width);
+          const by = Math.round((w.bbox.y0 / imgElement.height) * invCanvas.height);
+          if (by < 55) continue;
+          const tooClose = placedPositions.some((p) => Math.hypot(p.x - bx, p.y - by) < 48);
+          if (!tooClose) {
+            placedPositions.push({ x: bx, y: by });
+            await addInventoryAnnotation(matchedItem, {
+              x: bx - 6,
+              y: by - 4,
+              w: Math.max(82, (matchedItem.width || 1) * 60),
+              h: Math.max(64, (matchedItem.height || 1) * 58)
+            });
+            foundCount++;
+          }
+        }
+      }
+
+      if (invStatusLine) {
+        invStatusLine.textContent =
+          foundCount > 0
+            ? `✓ OCR tamamlandı: ${foundCount} eşya görsel üzerinde otomatik kutulandı. Eksik eşyaları üstteki aramadan seçip görsel üzerine tıklayarak ekleyebilirsiniz.`
+            : 'Görsel yüklendi. Üstteki arama çubuğundan eşyayı seçip görseldeki slotların üzerine tıklayarak Flea/Tüccar kutularını çizebilirsiniz.';
+      }
+    } catch (_err) {
+      if (invStatusLine) {
+        invStatusLine.textContent = 'Görsel yüklendi. Üstteki çubuktan eşya seçip görsel üzerine tıklayarak kutu çizebilirsiniz.';
+      }
+    }
+  }
+
+  function loadInventoryScreenshotDataUrl(dataUrl, labelText = 'Ekran görüntüsü') {
+    if (!dataUrl || !invCanvas) return;
+    const img = new Image();
+    img.onload = async () => {
+      invBaseImage = img;
+      const aspect = img.width / Math.max(1, img.height);
+      invCanvas.width = 960;
+      invCanvas.height = Math.round(960 / aspect);
+      invAnnotations = [];
+      renderInventoryCanvasAndList();
+      showToast(`${labelText} yüklendi, envanter analizi yapılıyor...`, 'ok');
+      await runInventoryImageOCR(img);
+    };
+    img.src = dataUrl;
+  }
+
+  function loadInventoryScreenshotBlob(blob) {
+    if (!blob) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        loadInventoryScreenshotDataUrl(reader.result, 'Yapıştırılan envanter görseli');
+      }
+    };
+    reader.readAsDataURL(blob);
+  }
+
+  if (btnInvCaptureLatest) {
+    btnInvCaptureLatest.addEventListener('click', async () => {
+      const res = await window.tarkovAPI.getLatestScreenshotDataUrl();
+      if (res && res.ok && res.dataUrl) {
+        loadInventoryScreenshotDataUrl(res.dataUrl, res.filename || 'Oyun ekran görüntüsü');
+      } else {
+        showToast(
+          res?.error || 'Klasörde ekran görüntüsü bulunamadı. Oyunda Home / PrtScn tuşuna basın veya Ctrl+V ile yapıştırın.',
+          'warn'
+        );
+      }
+    });
+  }
+
+  if (btnInvBrowse && inputInvFile) {
+    btnInvBrowse.addEventListener('click', () => inputInvFile.click());
+    inputInvFile.addEventListener('change', () => {
+      if (inputInvFile.files && inputInvFile.files[0]) {
+        loadInventoryScreenshotBlob(inputInvFile.files[0]);
+      }
+    });
+  }
+
+  if (btnInvClear) {
+    btnInvClear.addEventListener('click', () => {
+      invAnnotations = [];
+      renderInventoryCanvasAndList();
+      showToast('Envanter çizimleri temizlendi', 'info');
+    });
+  }
+
+  if (btnInvDownload && invCanvas) {
+    btnInvDownload.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = `tarkov-envanter-analizi-${Date.now()}.png`;
+      link.href = invCanvas.toDataURL('image/png');
+      link.click();
+      showToast('Çizimli envanter görseli indirildi', 'ok');
+    });
+  }
+
+  if (inputInvItemSearch) {
+    inputInvItemSearch.addEventListener('input', renderQuickInventorySearchChips);
+  }
+
+  if (invCanvas) {
+    invCanvas.addEventListener('click', (e) => {
+      const rect = invCanvas.getBoundingClientRect();
+      const scaleX = invCanvas.width / rect.width;
+      const scaleY = invCanvas.height / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top) * scaleY;
+
+      if (selectedBrushItem) {
+        addInventoryAnnotation(selectedBrushItem, {
+          x: cx - 42,
+          y: Math.max(58, cy - 32),
+          w: Math.max(92, (selectedBrushItem.width || 1) * 62),
+          h: Math.max(66, (selectedBrushItem.height || 1) * 60)
+        });
+      }
+    });
+
+    invCanvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const rect = invCanvas.getBoundingClientRect();
+      const scaleX = invCanvas.width / rect.width;
+      const scaleY = invCanvas.height / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top) * scaleY;
+
+      for (let i = invAnnotations.length - 1; i >= 0; i--) {
+        const a = invAnnotations[i];
+        if (cx >= a.x && cx <= a.x + a.w && cy >= a.y && cy <= a.y + a.h) {
+          invAnnotations.splice(i, 1);
+          renderInventoryCanvasAndList();
+          break;
+        }
+      }
+    });
+  }
+
+  if (invDropzone) {
+    invDropzone.addEventListener('dragover', (e) => e.preventDefault());
+    invDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+        loadInventoryScreenshotBlob(e.dataTransfer.files[0]);
+      }
+    });
+  }
 
   [setGamemode, setLanguage, setLevel, setScreenshotsDir, setDeleteSs].forEach((el) => {
     el.addEventListener('change', () => {
@@ -2012,6 +2668,52 @@
     currentPlayerState = st;
     renderPlayerStatusCard();
     renderTargetSelectDropdown();
+  });
+
+  // Görsel Büyütme Modal (Lightbox)
+  const lightboxModal = document.getElementById('image-lightbox-modal');
+  const lightboxBackdrop = document.getElementById('lightbox-backdrop');
+  const lightboxImg = document.getElementById('lightbox-img');
+  const lightboxCaption = document.getElementById('lightbox-caption');
+  const btnCloseLightbox = document.getElementById('btn-close-lightbox');
+
+  function openImageLightbox(src, caption = '') {
+    if (!lightboxModal || !src) return;
+    lightboxImg.src = src;
+    if (lightboxCaption) {
+      lightboxCaption.textContent = caption;
+      lightboxCaption.style.display = caption ? 'block' : 'none';
+    }
+    lightboxModal.classList.remove('hidden');
+  }
+
+  function closeImageLightbox() {
+    if (!lightboxModal) return;
+    lightboxModal.classList.add('hidden');
+    if (lightboxImg) lightboxImg.src = '';
+  }
+
+  window.openImageLightbox = openImageLightbox;
+  window.closeImageLightbox = closeImageLightbox;
+
+  if (btnCloseLightbox) btnCloseLightbox.addEventListener('click', closeImageLightbox);
+  if (lightboxBackdrop) lightboxBackdrop.addEventListener('click', closeImageLightbox);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lightboxModal && !lightboxModal.classList.contains('hidden')) {
+      closeImageLightbox();
+    }
+  });
+
+  // Delegated Click: Paneldeki tüm büyütülebilir görsellere tıklama
+  document.addEventListener('click', (e) => {
+    const zoomTarget = e.target.closest('[data-zoom-src]');
+    if (zoomTarget) {
+      e.stopPropagation();
+      e.preventDefault();
+      const src = zoomTarget.getAttribute('data-zoom-src');
+      const caption = zoomTarget.getAttribute('data-zoom-caption') || '';
+      openImageLightbox(src, caption);
+    }
   });
 
   window.tarkovAPI.onNewLog((entry) => {

@@ -634,7 +634,18 @@ function enrichDataset(rawDataset) {
     }
   }
 
+  const taskLocMappingPath = path.join(assetsRoot, 'task-locations', 'task_locations_map.json');
+  let taskLocationsMap = {};
+  if (fs.existsSync(taskLocMappingPath)) {
+    try {
+      taskLocationsMap = JSON.parse(fs.readFileSync(taskLocMappingPath, 'utf-8'));
+    } catch (_e) {}
+  }
+
   for (const t of tasks) {
+    if (taskLocationsMap[t.id]) {
+      t.locationImages = taskLocationsMap[t.id];
+    }
     if (t.taskImageLink) {
       t.taskImageLink = resolveLocalUrl(t.taskImageLink, 'task-images');
     }
@@ -646,6 +657,9 @@ function enrichDataset(rawDataset) {
     for (const o of t.objectives || []) {
       if (o.questItem && o.questItem.iconLink) {
         o.questItem.iconLink = resolveLocalUrl(o.questItem.iconLink, 'item-icons');
+      }
+      if (o.questItem && o.questItem.image512pxLink) {
+        o.questItem.image512pxLink = resolveLocalUrl(o.questItem.image512pxLink, 'item-icons');
       }
       if (o.markerItem && o.markerItem.iconLink) {
         o.markerItem.iconLink = resolveLocalUrl(o.markerItem.iconLink, 'item-icons');

@@ -58,6 +58,16 @@
     </footer>
   </div>
 
+  <!-- Görsel Büyütme Modal (Lightbox) -->
+  <div id="image-lightbox-modal" class="image-lightbox hidden" role="dialog" aria-modal="true">
+    <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+    <div class="lightbox-content">
+      <button type="button" class="lightbox-close" id="btn-close-lightbox" title="Kapat (Esc)">✕</button>
+      <img id="lightbox-img" src="" alt="Büyütülmüş Görsel" />
+      <div id="lightbox-caption" class="lightbox-caption"></div>
+    </div>
+  </div>
+
   <script src="../../node_modules/leaflet/dist/leaflet.js"></script>
   <script src="../../src/geo/coordinates.js"></script>
   <script src="overlay.js"></script>

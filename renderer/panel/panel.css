@@ -1631,3 +1631,219 @@ input[type="range"]:focus-visible {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* ENVANTER DEĞER ANALİZİ (FLEA VS TÜCCAR GÖRSEL ÇİZİM) STİLLERİ */
+.inv-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.inv-kpi-card {
+  padding: var(--space-3) var(--space-4);
+  gap: 4px;
+}
+
+.inv-kpi-val {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+}
+
+.inv-toolbar-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.inv-quick-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inv-quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--text-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.inv-quick-chip:hover,
+.inv-quick-chip.selected-brush {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.inv-workspace-grid {
+  display: grid;
+  grid-template-columns: 1.55fr 1fr;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.inv-canvas-card {
+  padding: var(--space-2);
+  background: #090b0f;
+}
+
+.inv-canvas-wrap {
+  width: 100%;
+  overflow: auto;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--border);
+  background: #06080b;
+  display: flex;
+  justify-content: center;
+}
+
+#inv-annotator-canvas {
+  max-width: 100%;
+  height: auto;
+  cursor: crosshair;
+  display: block;
+}
+
+.inv-detected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 540px;
+  overflow-y: auto;
+}
+
+.inv-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-left: 4px solid #4ade80;
+  border-radius: var(--radius-s);
+  font-size: 12px;
+}
+
+.inv-item-row.sell-trader {
+  border-left-color: #fbbf24;
+}
+
+.task-obj-item-thumb {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  background: #0c0e12;
+  border: 1px solid rgba(250, 204, 21, 0.55);
+  border-radius: 4px;
+  flex-shrink: 0;
+  cursor: zoom-in;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.task-obj-item-thumb:hover {
+  transform: scale(1.08);
+  border-color: #38bdf8;
+}
+
+/* Görsel Büyütme Modal (Lightbox) */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.image-lightbox.hidden {
+  display: none !important;
+}
+
+.lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(4, 7, 12, 0.88);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.lightbox-content {
+  position: relative;
+  z-index: 2;
+  max-width: 90vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: lightboxPop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes lightboxPop {
+  from {
+    transform: scale(0.92);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+#lightbox-img {
+  max-width: 88vw;
+  max-height: 80vh;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 2px solid rgba(56, 189, 248, 0.6);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.95);
+  background: #090d14;
+}
+
+.lightbox-caption {
+  margin-top: 12px;
+  color: #f8fafc;
+  font-size: 13.5px;
+  font-weight: 700;
+  background: rgba(15, 23, 42, 0.9);
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7);
+  max-width: 85vw;
+  text-align: center;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  font-size: 18px;
+  font-weight: 900;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.75);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.lightbox-close:hover {
+  background: #dc2626;
+  transform: scale(1.12);
+}

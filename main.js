@@ -33,6 +33,9 @@ let playerState = {
 // Aşama 4: Seçili Rota Hedefi ve Haritadaki Aday Hedefler
 let activeTarget = null; // { id, title, subtitle, category, color, position: {x,y,z} }
 let candidateTargets = [];
+let visitedTargetIds = new Set();
+let rotationTour = [];
+let lastCapturedScreenshot = null; // Envanter analizi için silinmeden önce bellekte tutulan son ekran görüntüsü
 
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
@@ -58,15 +61,18 @@ const DEFAULT_SETTINGS = {
   autoHomeIntervalMs: 3000, // Varsayılan: 3 saniyede bir Home tuşu
   yawOffset: 0,
   autoNearestTarget: false,
+  autoRotationEnabled: true,
+  rotationCategories: ['task', 'container', 'loot', 'extract'],
   selectedMap: 'customs',
   tarkovLogsDir: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Escape from Tarkov\\build\\Logs',
   autoDetectMapFromLogs: true,
   movePositionTrigger: false,
   moveTriggerCooldownMs: 4000,
   showMapContainers: true,
-  enabledContainerCategories: ['safe', 'pc', 'cache', 'weapon', 'medical'],
+  enabledContainerCategories: ['safe', 'pc', 'cache', 'weapon', 'medical', 'jacket', 'drawer', 'bag', 'tech'],
   showPmcSpawns: false,
   showScavSpawns: false,
+  showBossSpawns: false,
   showValuableSpawns: true,
   showMapLocks: false,
   showMapHazards: true,
@@ -76,6 +82,7 @@ const DEFAULT_SETTINGS = {
   hoverInteractiveMap: true,
   showAllMapTasksOnOverlay: true,
   layersV3Migrated: true,
+  layersV4Migrated: true,
   activeTaskIds: [],
   completedTaskIds: [],
   completedObjectiveIds: [],
@@ -258,9 +265,10 @@ function loadSettings() {
       if (mergedShortcuts.zoomOut === 'Alt+-') mergedShortcuts.zoomOut = 'Alt+9';
 
       const isV3 = !!parsed.layersV3Migrated;
+      const isV4 = !!parsed.layersV4Migrated;
       const rawCats = parsed.enabledContainerCategories;
-      let normCats = ['safe', 'pc', 'cache', 'weapon', 'medical'];
-      if (isV3) {
+      let normCats = ['safe', 'pc', 'cache', 'weapon', 'medical', 'jacket', 'drawer', 'bag', 'tech'];
+      if (isV4) {
         if (Array.isArray(rawCats)) {
           normCats = rawCats;
         } else if (rawCats && typeof rawCats === 'object') {
@@ -272,6 +280,11 @@ function loadSettings() {
         ...DEFAULT_SETTINGS,
         ...parsed,
         layersV3Migrated: true,
+        layersV4Migrated: true,
+        autoRotationEnabled: parsed.autoRotationEnabled !== undefined ? !!parsed.autoRotationEnabled : true,
+        rotationCategories: Array.isArray(parsed.rotationCategories)
+          ? parsed.rotationCategories
+          : ['task', 'container', 'loot', 'extract'],
         // Streets takılmasını önlemek için autoDetectMapFromCoords'u güvenli modda başlat
         autoDetectMapFromCoords: parsed.autoDetectUserExplicit ? !!parsed.autoDetectMapFromCoords : false,
         gameMode: parsed.gameModeUserExplicit ? parsed.gameMode : 'pve',
@@ -281,6 +294,7 @@ function loadSettings() {
         showAllMapTasksOnOverlay: isV3 ? !!parsed.showAllMapTasksOnOverlay : true,
         showPmcSpawns: !!parsed.showPmcSpawns,
         showScavSpawns: !!parsed.showScavSpawns,
+        showBossSpawns: !!parsed.showBossSpawns,
         showValuableSpawns: isV3 ? !!parsed.showValuableSpawns : true,
         showMapLocks: !!parsed.showMapLocks,
         showMapHazards: parsed.showMapHazards !== undefined ? !!parsed.showMapHazards : true,
@@ -336,9 +350,106 @@ function broadcastState() {
   }
 }
 
+function computeRotationTour() {
+  if (!currentSettings || !currentSettings.autoRotationEnabled) {
+    rotationTour = activeTarget ? [activeTarget] : [];
+    return rotationTour;
+  }
+
+  const rotCats = new Set(currentSettings.rotationCategories || ['task', 'container', 'loot', 'extract']);
+  const activeTaskIdsSet = new Set(currentSettings.activeTaskIds || []);
+  const mapNorm = currentSettings.selectedMap || 'customs';
+  const geo = MAP_CONFIGS[mapNorm] || MAP_CONFIGS['customs'];
+
+  // Başlangıç referans noktası: oyuncu konumu -> aktif hedef -> harita merkezi
+  let refPos = playerState.current?.position || activeTarget?.position || null;
+  if (!refPos && geo && Array.isArray(geo.bounds)) {
+    refPos = {
+      x: (geo.bounds[0][0] + geo.bounds[1][0]) * 0.5,
+      y: 0,
+      z: (geo.bounds[0][1] + geo.bounds[1][1]) * 0.5
+    };
+  }
+  if (!refPos) {
+    rotationTour = activeTarget ? [activeTarget] : [];
+    return rotationTour;
+  }
+
+  const mainPool = [];
+  const seenCoords = new Set();
+  for (const c of candidateTargets) {
+    if (!c || !c.position || visitedTargetIds.has(c.id)) continue;
+    if (c.category === 'extract') continue;
+    if (!rotCats.has(c.category)) continue;
+    if (c.category === 'task' && activeTaskIdsSet.size > 0 && !c.isSelectedTask) continue;
+
+    const coordKey = `${Math.round(c.position.x / 4)}_${Math.round(c.position.z / 4)}`;
+    if (seenCoords.has(coordKey) && (!activeTarget || activeTarget.id !== c.id)) continue;
+    seenCoords.add(coordKey);
+    mainPool.push(c);
+  }
+
+  const tour = [];
+  const usedIds = new Set();
+  let curPos = refPos;
+
+  if (activeTarget && !visitedTargetIds.has(activeTarget.id) && activeTarget.position) {
+    tour.push(activeTarget);
+    usedIds.add(activeTarget.id);
+    curPos = activeTarget.position;
+  }
+
+  const maxMainStops = 5;
+  while (tour.length < maxMainStops) {
+    let best = null;
+    let bestDist = Infinity;
+    for (const cand of mainPool) {
+      if (usedIds.has(cand.id)) continue;
+      // Görev hedeflerine hafif öncelik bonusu ver
+      const rawDist = Math.hypot(cand.position.x - curPos.x, cand.position.z - curPos.z);
+      const weightedDist = cand.category === 'task' && cand.isSelectedTask ? rawDist * 0.85 : rawDist;
+      if (weightedDist < bestDist) {
+        bestDist = weightedDist;
+        best = cand;
+      }
+    }
+    if (!best) break;
+    tour.push(best);
+    usedIds.add(best.id);
+    curPos = best.position;
+  }
+
+  // Eğer rotasyonda Çıkış (Extract) seçiliyse, son durağa en yakın PMC/Shared çıkışı zincirin sonuna ekle
+  if (rotCats.has('extract') && (tour.length > 0 || mainPool.length === 0)) {
+    const extStart = tour.length > 0 ? tour[tour.length - 1].position : curPos;
+    let bestExt = null;
+    let bestExtDist = Infinity;
+    for (const c of candidateTargets) {
+      if (c.category !== 'extract' || !c.position || visitedTargetIds.has(c.id) || usedIds.has(c.id)) continue;
+      if (c.faction === 'scav') continue;
+      const d = Math.hypot(c.position.x - extStart.x, c.position.z - extStart.z);
+      if (d < bestExtDist) {
+        bestExtDist = d;
+        bestExt = c;
+      }
+    }
+    if (bestExt) {
+      tour.push(bestExt);
+    }
+  }
+
+  if (!activeTarget && tour.length > 0 && (currentSettings.autoNearestTarget || currentSettings.autoRotationEnabled)) {
+    activeTarget = tour[0];
+  }
+
+  rotationTour = tour;
+  return rotationTour;
+}
+
 function broadcastPlayerState() {
-  // Otomatik en yakın hedef açıksa ve oyuncunun konumu varsa en yakın hedefi seç
-  if (currentSettings.autoNearestTarget && playerState.current && candidateTargets.length > 0) {
+  // Otomatik rotasyon ve en yakın hedef zincirini güncelle
+  computeRotationTour();
+  if (currentSettings.autoNearestTarget && playerState.current && candidateTargets.length > 0 && !activeTarget) {
     selectNearestTargetToPlayer(false);
   }
 
@@ -361,7 +472,9 @@ function broadcastPlayerState() {
   const payload = {
     ...playerState,
     activeTarget,
-    navInfo
+    navInfo,
+    rotationTour,
+    visitedTargetIds: [...visitedTargetIds]
   };
 
   if (panelWindow && !panelWindow.isDestroyed()) {
@@ -372,16 +485,25 @@ function broadcastPlayerState() {
   }
 }
 
-function selectNearestTargetToPlayer(shouldBroadcast = true) {
-  if (!playerState.current || !playerState.current.position || candidateTargets.length === 0) {
+function selectNearestTargetToPlayer(shouldBroadcast = true, filterCategory = null) {
+  if (candidateTargets.length === 0) {
     return null;
   }
-  const p = playerState.current.position;
+  const mapNorm = currentSettings ? currentSettings.selectedMap || 'customs' : 'customs';
+  const geo = MAP_CONFIGS[mapNorm] || MAP_CONFIGS['customs'];
+  const p =
+    playerState.current?.position ||
+    activeTarget?.position ||
+    (geo && Array.isArray(geo.bounds)
+      ? { x: (geo.bounds[0][0] + geo.bounds[1][0]) * 0.5, y: 0, z: (geo.bounds[0][1] + geo.bounds[1][1]) * 0.5 }
+      : { x: 0, y: 0, z: 0 });
+
   let best = null;
   let bestDist = Infinity;
 
   for (const t of candidateTargets) {
-    if (!t.position) continue;
+    if (!t.position || visitedTargetIds.has(t.id)) continue;
+    if (filterCategory && t.category !== filterCategory) continue;
     const d = Math.hypot(t.position.x - p.x, t.position.z - p.z);
     if (d < bestDist) {
       bestDist = d;
@@ -398,26 +520,25 @@ function selectNearestTargetToPlayer(shouldBroadcast = true) {
 
 function cycleNextTarget() {
   if (!candidateTargets || candidateTargets.length === 0) {
-    addLog('info', 'Bu haritada seçilebilir hedef (pinlenmiş eşya veya çıkış) bulunmuyor.');
+    addLog('info', 'Bu haritada seçilebilir hedef (pinlenmiş eşya, kutu veya çıkış) bulunmuyor.');
     return null;
   }
 
-  // Oyuncu konumu varsa adayları oyuncuya yakınlığa göre sırala
-  let list = [...candidateTargets];
-  if (playerState.current && playerState.current.position) {
-    const p = playerState.current.position;
-    list.sort(
-      (a, b) =>
-        Math.hypot(a.position.x - p.x, a.position.z - p.z) -
-        Math.hypot(b.position.x - p.x, b.position.z - p.z)
-    );
+  const prevCat = activeTarget ? activeTarget.category : null;
+  if (activeTarget && activeTarget.id) {
+    visitedTargetIds.add(activeTarget.id);
+    addLog('info', `Hedef tamamlandı / lootlandı işaretlendi: ${activeTarget.title}`);
+    activeTarget = null;
   }
 
-  const curIdx = activeTarget ? list.findIndex((x) => x.id === activeTarget.id) : -1;
-  const nextIdx = (curIdx + 1) % list.length;
-  activeTarget = list[nextIdx];
+  computeRotationTour();
+  if (!activeTarget) {
+    selectNearestTargetToPlayer(false, prevCat) || selectNearestTargetToPlayer(false, null);
+  }
   broadcastPlayerState();
-  addLog('info', `Hedef değiştirildi (${nextIdx + 1}/${list.length}): ${activeTarget.title}`);
+  if (activeTarget) {
+    addLog('info', `Sıradaki en yakın hedefe geçildi: ${activeTarget.title}`);
+  }
   return activeTarget;
 }
 
@@ -438,6 +559,43 @@ async function handleParsedPlayerPosition(parsed, fullFilePath = null) {
   }
 
   playerState.current = parsed;
+
+  // Ekran görüntüsü silinmeden önce envanter analizi için belleğe al
+  if (fullFilePath && fs.existsSync(fullFilePath)) {
+    try {
+      const buf = fs.readFileSync(fullFilePath);
+      const ext = path.extname(fullFilePath).toLowerCase() === '.jpg' ? 'jpeg' : 'png';
+      lastCapturedScreenshot = {
+        filename: path.basename(fullFilePath),
+        dataUrl: `data:image/${ext};base64,${buf.toString('base64')}`,
+        timestamp: Date.now()
+      };
+    } catch (_e) {
+      // ignore
+    }
+  }
+
+  // Oyuncu aktif hedefe <= 16 metre yaklaştıysa otomatik olarak tamamlandı işaretle ve sıradaki hedefe geç!
+  if (activeTarget && activeTarget.position && parsed.position) {
+    const distToActive = Math.hypot(
+      activeTarget.position.x - parsed.position.x,
+      activeTarget.position.z - parsed.position.z
+    );
+    if (distToActive <= 16) {
+      const prevCat = activeTarget.category;
+      const doneTitle = activeTarget.title;
+      visitedTargetIds.add(activeTarget.id);
+      activeTarget = null;
+      computeRotationTour();
+      if (!activeTarget) {
+        selectNearestTargetToPlayer(false, prevCat);
+      }
+      addLog(
+        'info',
+        `Hedefe ulaşıldı (${distToActive.toFixed(1)}m <= 16m): "${doneTitle}" tamamlandı, sıradaki en yakın hedefe geçildi.`
+      );
+    }
+  }
 
   if (currentSettings.autoDetectMapFromCoords && dataService && dataService.currentData) {
     const detected = detectMapFromPosition(
@@ -807,7 +965,7 @@ async function buildOverlayMapPayload() {
       return { key: 'medical', label: 'Tıbbi Çanta & İlaç Kutusu', color: '#f43f5e', iconFile: 'container_medbag.png' };
     }
     if (n.includes('jacket')) {
-      return { key: 'jacket', label: 'Ceket (Anahtar)', color: '#a78bfa', iconFile: 'container_jacket.png' };
+      return { key: 'jacket', label: 'Ceket & Kıyafet (Tüm Ceketler)', color: '#a78bfa', iconFile: 'container_jacket.png' };
     }
     if (n.includes('drawer')) {
       return { key: 'drawer', label: 'Çekmece (Filing Cabinet)', color: '#94a3b8', iconFile: 'container_drawer.png' };
@@ -827,10 +985,30 @@ async function buildOverlayMapPayload() {
     return { key: 'tech', label: 'Alet Çantası & Teknik/Erzak Sandığı', color: '#f59e0b', iconFile: 'container_crate.png' };
   };
 
-  const containerMarkers = rawContainers.map((c) => {
+  const enabledCatsArr = Array.isArray(currentSettings.enabledContainerCategories)
+    ? currentSettings.enabledContainerCategories
+    : currentSettings.enabledContainerCategories && typeof currentSettings.enabledContainerCategories === 'object'
+      ? Object.keys(currentSettings.enabledContainerCategories).filter((k) => !!currentSettings.enabledContainerCategories[k])
+      : [];
+  const enabledCatsSet = new Set(enabledCatsArr);
+
+  const containerMarkers = rawContainers.map((c, idx) => {
     const cat = classifyContainer(c.lootContainer?.normalizedName);
+    const cId = `cont_${idx}`;
+    if (c.position && enabledCatsSet.has(cat.key)) {
+      nextCandidates.push({
+        id: cId,
+        title: `${c.lootContainer?.name || cat.label}`,
+        subtitle: cat.label,
+        category: 'container',
+        containerCat: cat.key,
+        color: cat.color,
+        position: c.position
+      });
+    }
     return {
       ...c,
+      id: cId,
       categoryKey: cat.key,
       categoryLabel: cat.label,
       color: cat.color,
@@ -838,9 +1016,24 @@ async function buildOverlayMapPayload() {
     };
   });
 
+  if (currentSettings.showValuableSpawns) {
+    for (const v of valuableMarkers) {
+      if (!v.position) continue;
+      nextCandidates.push({
+        id: v.id,
+        title: `💎 ${v.shortName || v.itemName}`,
+        subtitle: `Değerli Eşya (${(v.bestPrice || 0).toLocaleString('tr-TR')} ₽)`,
+        category: 'loot',
+        color: v.highlightColor,
+        position: v.position
+      });
+    }
+  }
+
   const rawSpawns = (apiMap && apiMap.spawns) ? apiMap.spawns : [];
   const pmcSpawns = [];
   const scavSpawns = [];
+  const bossSpawns = [];
   rawSpawns.forEach((sp, idx) => {
     if (!sp || !sp.position) return;
     const sides = sp.sides || [];
@@ -849,7 +1042,8 @@ async function buildOverlayMapPayload() {
     const isSniper = cats.includes('sniper');
     const isRogue = cats.includes('rogue');
     const isCultist = cats.includes('cultist-priest');
-    const isScav = sides.includes('scav') || cats.includes('bot') || isBoss || isSniper || isRogue || isCultist;
+    const isBossGroup = isBoss || isRogue || isCultist;
+    const isScav = sides.includes('scav') || cats.includes('bot') || isSniper;
     const isPmc =
       sides.includes('pmc') ||
       cats.includes('botpmc') ||
@@ -864,29 +1058,35 @@ async function buildOverlayMapPayload() {
         position: sp.position,
         color: '#38bdf8'
       });
-    } else if (isScav) {
+    } else if (isBossGroup) {
       const label = isBoss
         ? 'Boss Doğma Noktası'
-        : isSniper
-          ? 'Sniper Scav Doğma Noktası'
-          : isRogue
-            ? 'Rogue Doğma Noktası'
-            : 'Scav Doğma Noktası';
+        : isCultist
+          ? 'Cultist (Tarikatçı) Doğma Noktası'
+          : 'Rogue / Raider Doğma Noktası';
       const iconFile = isBoss
         ? 'spawn_boss.png'
-        : isSniper
-          ? 'spawn_sniper_scav.png'
-          : isRogue
-            ? 'spawn_rogue.png'
-            : isCultist
-              ? 'spawn_cultist-priest.png'
-              : 'spawn_scav.png';
-      const color = isBoss ? '#ef4444' : isSniper ? '#f97316' : '#fb7185';
+        : isCultist
+          ? 'spawn_cultist-priest.png'
+          : 'spawn_rogue.png';
+      bossSpawns.push({
+        id: `spawn_boss_${idx}`,
+        title: label,
+        iconFile,
+        subType: isBoss ? 'boss' : isCultist ? 'cultist' : 'rogue',
+        zoneName: sp.zoneName || '',
+        position: sp.position,
+        color: '#ef4444'
+      });
+    } else if (isScav) {
+      const label = isSniper ? 'Sniper Scav Doğma Noktası' : 'Scav Doğma Noktası';
+      const iconFile = isSniper ? 'spawn_sniper_scav.png' : 'spawn_scav.png';
+      const color = isSniper ? '#f97316' : '#fb7185';
       scavSpawns.push({
         id: `spawn_scav_${idx}`,
         title: label,
         iconFile,
-        subType: isBoss ? 'boss' : isSniper ? 'sniper' : 'scav',
+        subType: isSniper ? 'sniper' : 'scav',
         zoneName: sp.zoneName || '',
         position: sp.position,
         color
@@ -900,10 +1100,40 @@ async function buildOverlayMapPayload() {
   const stationaryWeapons = (apiMap && apiMap.stationaryWeapons) ? apiMap.stationaryWeapons : [];
   const btrStops = (apiMap && apiMap.btrStops) ? apiMap.btrStops : [];
 
-  const extracts = ((apiMap && apiMap.extracts) ? apiMap.extracts : []).map((ex, i) => ({
-    ...ex,
-    id: ex.id || `extract_${i}`
-  }));
+  const extracts = ((apiMap && apiMap.extracts) ? apiMap.extracts : []).map((ex, i) => {
+    const eId = ex.id || `extract_${i}`;
+    let requiredKey = null;
+    if (ex.position && Array.isArray(locks)) {
+      const nearLock = locks.find(
+        (lk) =>
+          lk.position &&
+          lk.key &&
+          Math.hypot(lk.position.x - ex.position.x, lk.position.z - ex.position.z) <= 28
+      );
+      if (nearLock && nearLock.key) {
+        requiredKey = nearLock.key;
+      }
+    }
+    const nameUpper = (ex.name || '').toUpperCase();
+    let conditionNote = '';
+    if (requiredKey) {
+      conditionNote = `🔑 Anahtar: ${requiredKey.shortName || requiredKey.name}`;
+    } else if (nameUpper.includes('ZB-016')) {
+      conditionNote = '🟢 Sığınak / Yeşil İşaret Fişeği (Koşullu)';
+    } else if (nameUpper.includes('FLARE')) {
+      conditionNote = '🟢 Yeşil İşaret Fişeği Gerekli';
+    } else if (nameUpper.includes('CO-OP')) {
+      conditionNote = '🤝 PMC + Scav Ortak Çıkış';
+    } else if (nameUpper.includes('ARAÇ') || nameUpper.includes('V-EX')) {
+      conditionNote = '🚕 Ücretli Araç Çıkışı (RUB)';
+    }
+    return {
+      ...ex,
+      id: eId,
+      requiredKey,
+      conditionNote
+    };
+  });
   const transits = ((apiMap && apiMap.transits) ? apiMap.transits : []).map((trItem, i) => ({
     ...trItem,
     id: trItem.id || `transit_${i}`
@@ -914,9 +1144,10 @@ async function buildOverlayMapPayload() {
     if (!ex.position) continue;
     nextCandidates.push({
       id: `extract_${ex.id}`,
-      title: `Çıkış: ${ex.name}`,
-      subtitle: `Extract (${(ex.faction || 'all').toUpperCase()})`,
+      title: `Çıkış: ${ex.name}${ex.requiredKey ? ` (🔑 ${ex.requiredKey.shortName || 'Anahtarlı'})` : ''}`,
+      subtitle: ex.conditionNote || `Extract (${(ex.faction || 'all').toUpperCase()})`,
       category: 'extract',
+      faction: (ex.faction || 'all').toLowerCase(),
       color: '#10b981',
       position: ex.position
     });
@@ -968,11 +1199,19 @@ async function buildOverlayMapPayload() {
         pointsOnMap.forEach((pt, idx) => {
           const markerId = `task_${task.id}_${obj.id}_${idx}`;
           const firstKey = obj.requiredKeys?.[0]?.[0] || task.neededKeys?.[0]?.keys?.[0] || null;
+          const isMapPhoto = (c = '', orig = '') => {
+            const t = `${c} ${orig}`.toLowerCase();
+            return t.includes('marked on map') || t.includes('on map') || t.includes('harita') || t.includes('map.png') || t.includes('map.jpg') || t.includes('overview') || t.includes('layout');
+          };
+          const locImages = (Array.isArray(task.locationImages) ? task.locationImages : []).filter(img => img && !isMapPhoto(img.caption, img.originalName));
+          const bestLocImg = locImages[0]?.localPath || null;
           const tMarker = {
             id: markerId,
             taskId: task.id,
             taskName: task.name,
             taskImageLink: task.taskImageLink || '',
+            locationImage: bestLocImg,
+            allLocationImages: locImages,
             traderName: task.trader?.name || 'Trader',
             objectiveId: obj.id,
             objectiveType: obj.type,
@@ -986,6 +1225,7 @@ async function buildOverlayMapPayload() {
               firstKey?.iconLink ||
               '',
             questItemImage:
+              bestLocImg ||
               obj.questItem?.image512pxLink ||
               obj.questItem?.iconLink ||
               obj.markerItem?.iconLink ||
@@ -1001,6 +1241,7 @@ async function buildOverlayMapPayload() {
             title: `Görev: ${task.name}`,
             subtitle: obj.description || task.trader?.name || 'Görev Hedefi',
             category: 'task',
+            isSelectedTask: isTaskSelected,
             color: isTaskSelected ? '#a855f7' : '#eab308',
             position: pt.position
           });
@@ -1015,6 +1256,7 @@ async function buildOverlayMapPayload() {
   if (activeTarget && !candidateTargets.some((c) => c.id === activeTarget.id)) {
     activeTarget = null;
   }
+  computeRotationTour();
   if (currentSettings.autoNearestTarget && !activeTarget && candidateTargets.length > 0) {
     selectNearestTargetToPlayer(false);
   }
@@ -1029,6 +1271,7 @@ async function buildOverlayMapPayload() {
     containerMarkers,
     pmcSpawns,
     scavSpawns,
+    bossSpawns,
     hazards,
     locks,
     switches,
@@ -1039,14 +1282,13 @@ async function buildOverlayMapPayload() {
     callouts,
     taskMarkers,
     candidateTargets,
+    rotationTour,
+    visitedTargetIds: [...visitedTargetIds],
     showMapContainers: !!currentSettings.showMapContainers,
-    enabledContainerCategories: Array.isArray(currentSettings.enabledContainerCategories)
-      ? currentSettings.enabledContainerCategories
-      : currentSettings.enabledContainerCategories && typeof currentSettings.enabledContainerCategories === 'object'
-        ? Object.keys(currentSettings.enabledContainerCategories).filter((k) => !!currentSettings.enabledContainerCategories[k])
-        : [],
+    enabledContainerCategories: enabledCatsArr,
     showPmcSpawns: !!currentSettings.showPmcSpawns,
     showScavSpawns: !!currentSettings.showScavSpawns,
+    showBossSpawns: !!currentSettings.showBossSpawns,
     showValuableSpawns: !!currentSettings.showValuableSpawns,
     showMapLocks: !!currentSettings.showMapLocks,
     showMapHazards: currentSettings.showMapHazards !== false,
@@ -1132,6 +1374,10 @@ function createOverlayWindow() {
 
   overlayWindow.loadFile(path.join(__dirname, 'renderer', 'overlay', 'index.html'));
 
+  overlayWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    console.log(`[Overlay Web] (lvl ${level}) ${message} [${sourceId}:${line}]`);
+  });
+
   overlayWindow.on('moved', () => {
     if (!overlayWindow || overlayWindow.isDestroyed()) return;
     const [nx, ny] = overlayWindow.getPosition();
@@ -1177,6 +1423,10 @@ function createPanelWindow() {
   });
 
   panelWindow.loadFile(path.join(__dirname, 'renderer', 'panel', 'index.html'));
+
+  panelWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    console.log(`[Panel Web] (lvl ${level}) ${message} [${sourceId}:${line}]`);
+  });
   panelWindow.show();
   panelWindow.focus();
 
@@ -1390,6 +1640,10 @@ function setupIPC() {
       currentSettings.showMapContainers = enabledArr.length > 0;
     }
 
+    if (Array.isArray(partial.rotationCategories)) {
+      currentSettings.rotationCategories = partial.rotationCategories;
+    }
+
     const topKeys = [
       'gameMode',
       'language',
@@ -1401,6 +1655,7 @@ function setupIPC() {
       'autoHomeIntervalMs',
       'yawOffset',
       'autoNearestTarget',
+      'autoRotationEnabled',
       'selectedMap',
       'tarkovLogsDir',
       'autoDetectMapFromLogs',
@@ -1408,6 +1663,7 @@ function setupIPC() {
       'showMapContainers',
       'showPmcSpawns',
       'showScavSpawns',
+      'showBossSpawns',
       'showValuableSpawns',
       'showMapLocks',
       'showMapHazards',
@@ -1421,6 +1677,9 @@ function setupIPC() {
       if (partial[key] !== undefined) {
         currentSettings[key] = partial[key];
       }
+    }
+    if (partial.selectedMap && partial.selectedMap !== prevMap) {
+      visitedTargetIds.clear();
     }
 
     saveSettings();
@@ -1452,29 +1711,8 @@ function setupIPC() {
       });
     }
 
-    if (
-      currentSettings.selectedMap !== prevMap ||
-      currentSettings.showMapContainers !== prevShowContainers ||
-      JSON.stringify(currentSettings.enabledContainerCategories || []) !== prevEnabledContainerCats ||
-      currentSettings.showPmcSpawns !== prevShowPmcSpawns ||
-      currentSettings.showScavSpawns !== prevShowScavSpawns ||
-      currentSettings.showValuableSpawns !== prevShowValuableSpawns ||
-      currentSettings.showMapLocks !== prevShowMapLocks ||
-      currentSettings.showMapHazards !== prevShowMapHazards ||
-      currentSettings.showMapUtilities !== prevShowMapUtilities ||
-      currentSettings.showMapExtracts !== prevShowExtracts ||
-      currentSettings.showMapCallouts !== prevShowCallouts ||
-      currentSettings.showAllMapTasksOnOverlay !== prevShowAllTasks ||
-      currentSettings.mapRenderStyle !== prevRenderStyle ||
-      Boolean(partial.overlay && partial.overlay.layers) ||
-      Array.isArray(partial.pinnedItems) ||
-      Array.isArray(partial.activeTaskIds) ||
-      Array.isArray(partial.completedObjectiveIds) ||
-      currentSettings.language !== prevLang ||
-      currentSettings.gameMode !== prevMode
-    ) {
-      await broadcastOverlayMapData();
-    }
+    await broadcastOverlayMapData();
+    broadcastPlayerState();
 
     return { ok: true, settings: currentSettings, shortcutStatus };
   });
@@ -1662,6 +1900,74 @@ function setupIPC() {
     activeTarget = null;
     broadcastPlayerState();
     return { ok: true };
+  });
+
+  ipcMain.handle('target:clearVisited', async () => {
+    visitedTargetIds.clear();
+    activeTarget = null;
+    await broadcastOverlayMapData();
+    broadcastPlayerState();
+    addLog('info', 'Gezilen / lootlanan hedef listesi sıfırlandı.');
+    return { ok: true };
+  });
+
+  ipcMain.handle('target:startRotation', async (_event, opts = {}) => {
+    currentSettings.autoRotationEnabled = true;
+    if (Array.isArray(opts.categories) && opts.categories.length > 0) {
+      currentSettings.rotationCategories = opts.categories;
+    }
+    if (opts.resetVisited) {
+      visitedTargetIds.clear();
+    }
+    activeTarget = null;
+    saveSettings();
+    await broadcastOverlayMapData();
+    computeRotationTour();
+    if (!activeTarget && rotationTour.length > 0) {
+      activeTarget = rotationTour[0];
+    }
+    broadcastState();
+    broadcastPlayerState();
+    return { ok: true, activeTarget, rotationTour };
+  });
+
+  ipcMain.handle('screenshot:getLatestDataUrl', async () => {
+    const dir = (currentSettings.screenshotsDir || '').trim();
+    if (dir && fs.existsSync(dir)) {
+      const files = fs
+        .readdirSync(dir)
+        .filter((f) => /\.(png|jpg|jpeg)$/i.test(f))
+        .map((f) => {
+          const full = path.join(dir, f);
+          const st = fs.statSync(full);
+          return { name: f, full, mtime: st.mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+
+      if (files.length > 0) {
+        const latest = files[0];
+        if (!lastCapturedScreenshot || latest.mtime >= lastCapturedScreenshot.timestamp - 2000) {
+          const buf = fs.readFileSync(latest.full);
+          const ext = path.extname(latest.full).toLowerCase() === '.jpg' ? 'jpeg' : 'png';
+          return {
+            ok: true,
+            filename: latest.name,
+            dataUrl: `data:image/${ext};base64,${buf.toString('base64')}`
+          };
+        }
+      }
+    }
+    if (lastCapturedScreenshot && lastCapturedScreenshot.dataUrl) {
+      return {
+        ok: true,
+        filename: lastCapturedScreenshot.filename,
+        dataUrl: lastCapturedScreenshot.dataUrl
+      };
+    }
+    return {
+      ok: false,
+      error: 'Ekran görüntüsü klasöründe henüz görüntü bulunamadı. Oyun içinde envanter açıkken ekran görüntüsü (PrintScreen / Home) alın veya Ctrl+V ile yapıştırın.'
+    };
   });
 
   // Fare Overlay Üzerine Geldiğinde Sürükleme / Yakınlaştırma İçin Geçici Etkileşim IPC
