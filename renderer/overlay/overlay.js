@@ -470,6 +470,66 @@
     return '★';
   }
 
+  function buildNaturalOrganicContour(outlinePoints, seedIdx = 0) {
+    if (!Array.isArray(outlinePoints) || outlinePoints.length < 3) return [];
+    let cx = 0;
+    let cz = 0;
+    for (const p of outlinePoints) {
+      cx += p.x;
+      cz += p.z;
+    }
+    cx /= outlinePoints.length;
+    cz /= outlinePoints.length;
+
+    // 1) Dikdörtgen köşelerin arasına dışbükey kavisli orta noktalar ve doğal arazi dalgalanması ekle
+    const enriched = [];
+    const n = outlinePoints.length;
+    for (let i = 0; i < n; i++) {
+      const p1 = outlinePoints[i];
+      const p2 = outlinePoints[(i + 1) % n];
+      // Köşeyi merkeze doğru hafif yuvarla
+      enriched.push({
+        x: p1.x * 0.88 + cx * 0.12,
+        y: p1.y || 0,
+        z: p1.z * 0.88 + cz * 0.12
+      });
+      // Kenar ortasını dışa doğru doğal bombe ile şişir
+      const mx = (p1.x + p2.x) * 0.5;
+      const mz = (p1.z + p2.z) * 0.5;
+      const vx = mx - cx;
+      const vz = mz - cz;
+      const wave = 1.08 + 0.06 * Math.sin(seedIdx * 1.7 + i * 2.3);
+      enriched.push({
+        x: cx + vx * wave,
+        y: p1.y || 0,
+        z: cz + vz * wave
+      });
+    }
+
+    // 2) 3 aşamalı Chaikin Corner-Cutting ile tamamen pürüzsüz organik eğriye dönüştür
+    let pts = enriched;
+    for (let iter = 0; iter < 3; iter++) {
+      const next = [];
+      const len = pts.length;
+      for (let i = 0; i < len; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % len];
+        next.push({
+          x: 0.75 * a.x + 0.25 * b.x,
+          y: a.y || 0,
+          z: 0.75 * a.z + 0.25 * b.z
+        });
+        next.push({
+          x: 0.25 * a.x + 0.75 * b.x,
+          y: a.y || 0,
+          z: 0.25 * a.z + 0.75 * b.z
+        });
+      }
+      pts = next;
+    }
+    return pts;
+  }
+
   function renderMarkers() {
     if (!leafletMap || !currentMapPayload) return;
 
@@ -507,43 +567,55 @@
     const showExtracts = currentMapPayload.showMapExtracts !== false;
     const showCallouts = currentMapPayload.showMapCallouts !== false;
 
-    // 0) Mayın Tarlaları & Sniper Sınır Bölgeleri (Hazards)
+    // 0) Mayın Tarlaları & Sniper Sınır Bölgeleri (Doğal Organik Konturlu Çizim)
     if (showMapHazards && spawnLayerGroup) {
-      for (const hz of hazards) {
+      const placedHazardIcons = [];
+      hazards.forEach((hz, hzIdx) => {
         const isMine = (hz.hazardType || '').includes('mine');
         const polyColor = isMine ? '#ef4444' : '#f97316';
         if (Array.isArray(hz.outline) && hz.outline.length >= 3) {
-          const latLngs = hz.outline.map((pt) => window.TarkovGeo.gamePosToLatLngArray(pt));
+          const organicWorldPts = buildNaturalOrganicContour(hz.outline, hzIdx);
+          const latLngs = organicWorldPts.map((pt) => window.TarkovGeo.gamePosToLatLngArray(pt));
           const poly = L.polygon(latLngs, {
             color: polyColor,
-            weight: 1.5,
-            dashArray: '4, 4',
+            weight: 1.6,
+            opacity: 0.72,
+            dashArray: '6, 5',
+            lineJoin: 'round',
+            lineCap: 'round',
             fillColor: polyColor,
-            fillOpacity: 0.18,
+            fillOpacity: 0.14,
             interactive: true
           });
           poly.bindTooltip(
             `<div>
-              <strong style="color:${polyColor}">⚠ ${isMine ? 'Mayın Tarlası' : 'Sniper Ateş Bölgesi'}</strong><br/>
-              <span>Rota sistemi bu bölgenin etrafından dolaşır</span>
+              <strong style="color:${polyColor}">⚠ ${isMine ? 'Mayınlı Arazi Bölgesi' : 'Sniper Ateş Bölgesi'}</strong><br/>
+              <span>Rota sistemi bu bölgenin etrafından güvenli dolaşır</span>
             </div>`,
             { className: 'tarkov-tooltip', sticky: true }
           );
           poly.addTo(spawnLayerGroup);
         }
         if (hz.position) {
-          const hzLatLng = window.TarkovGeo.gamePosToLatLngArray(hz.position);
-          const hzIconFile = hz.hazardType === 'mortar' ? 'hazard_mortar.png' : 'hazard.png';
-          const hzIcon = L.divIcon({
-            className: '',
-            html: `<img src="../../assets/map-icons/${hzIconFile}" style="width:16px;height:16px;filter:drop-shadow(0 0 2px #000);" alt="" />`,
-            iconSize: [16, 16],
-            iconAnchor: [8, 8]
-          });
-          const hzMarker = L.marker(hzLatLng, { icon: hzIcon, interactive: false });
-          hzMarker.addTo(spawnLayerGroup);
+          // Aynı bölgede üst üste binen kuru kafa ikonlarını 45m yarıçapında tekleştir
+          const tooClose = placedHazardIcons.some(
+            (p) => Math.hypot(p.x - hz.position.x, p.z - hz.position.z) < 45
+          );
+          if (!tooClose) {
+            placedHazardIcons.push(hz.position);
+            const hzLatLng = window.TarkovGeo.gamePosToLatLngArray(hz.position);
+            const hzIconFile = hz.hazardType === 'mortar' ? 'hazard_mortar.png' : 'hazard.png';
+            const hzIcon = L.divIcon({
+              className: '',
+              html: `<img src="../../assets/map-icons/${hzIconFile}" style="width:16px;height:16px;opacity:0.9;filter:drop-shadow(0 0 3px #000);" alt="" />`,
+              iconSize: [16, 16],
+              iconAnchor: [8, 8]
+            });
+            const hzMarker = L.marker(hzLatLng, { icon: hzIcon, interactive: false });
+            hzMarker.addTo(spawnLayerGroup);
+          }
         }
-      }
+      });
     }
 
     // 1) Harita Konum İsimleri (Bina ve Bölge Callout Etiketleri)
@@ -617,103 +689,103 @@
 
         marker.addTo(looseLayerGroup);
       }
+    }
 
-      // 2B) Değerli Eşya Tahmini Spawnları (Bitcoin, LEDX, GPU, İstihbarat, Tetriz, Marked Anahtar vb.)
-      if (showValuableSpawns) {
-        for (const v of valuableMarkers) {
-          if (!v.position) continue;
-          const latLng = window.TarkovGeo.gamePosToLatLngArray(v.position);
-          const pinImgSrc = v.iconLink || '../../assets/map-icons/loose_loot.png';
-          const icon = L.divIcon({
-            className: '',
-            html: `<div style="width:22px;height:22px;border-radius:50%;background:rgba(12,14,18,0.92);border:2px solid ${v.highlightColor};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 7px ${v.highlightColor};">
-              <img src="${pinImgSrc}" style="width:16px;height:16px;object-fit:contain;" alt="" />
-            </div>`,
-            iconSize: [22, 22],
-            iconAnchor: [11, 11]
-          });
-
-          const marker = L.marker(latLng, { icon, zIndexOffset: 700 });
-          const priceStr = v.bestPrice ? `${v.bestPrice.toLocaleString('tr-TR')} ₽` : '-';
-          const previewImg = v.baseImageLink || v.iconLink || '../../assets/map-icons/loose_loot.png';
-
-          marker.bindTooltip(
-            `<div style="display:flex;gap:8px;align-items:center;">
-              <img src="${previewImg}" style="width:48px;height:48px;object-fit:contain;background:#0c0e12;border:1px solid ${v.highlightColor};border-radius:4px;" alt="" />
-              <div>
-                <strong style="color:${v.highlightColor}">💎 ${v.itemName} (${v.shortName})</strong><br/>
-                <span>Değer: <strong>${priceStr}</strong> (${v.bestSource})</span><br/>
-                ${v.otherNames ? `<span style="color:#cbd5e1">Olası Havuz: ${v.otherNames}</span><br/>` : ''}
-                <span>Kat (Y): ${v.position.y.toFixed(1)}m</span><br/>
-                <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
-              </div>
-            </div>`,
-            { className: 'tarkov-tooltip', direction: 'top', offset: [0, -10] }
-          );
-
-          marker.on('click', () => {
-            window.tarkovAPI.setTarget({
-              id: v.id,
-              title: `💎 ${v.shortName || v.itemName}`,
-              subtitle: `Değerli Eşya (${priceStr})`,
-              category: 'loot',
-              color: v.highlightColor,
-              position: v.position
-            });
-          });
-
-          marker.addTo(looseLayerGroup);
-        }
-      }
-
-      // 2C) Kategori Kategori Loot Kutuları (Resmi tarkov.dev Konteyner İkonlarıyla)
-      if (showContainers || enabledCatSet.size > 0) {
-        containerMarkers.forEach((c, idx) => {
-          if (!c.position) return;
-          if (!showContainers && !enabledCatSet.has(c.categoryKey)) return;
-
-          const latLng = window.TarkovGeo.gamePosToLatLngArray(c.position);
-          const pinColor = c.color || '#f59e0b';
-          const iconSrc = `../../assets/map-icons/${c.iconFile || 'container_crate.png'}`;
-          const icon = L.divIcon({
-            className: '',
-            html: `<div style="width:20px;height:20px;border-radius:4px;background:rgba(12,14,18,0.88);border:1.5px solid ${pinColor};display:flex;align-items:center;justify-content:center;cursor:pointer;">
-              <img src="${iconSrc}" style="width:15px;height:15px;object-fit:contain;" alt="" />
-            </div>`,
-            iconSize: [20, 20],
-            iconAnchor: [10, 10]
-          });
-
-          const marker = L.marker(latLng, { icon, zIndexOffset: 350 });
-          const cName = c.lootContainer?.name || 'Konteyner';
-          const catLabel = c.categoryLabel || 'Loot Kutusu';
-          marker.bindTooltip(
-            `<div style="display:flex;gap:8px;align-items:center;">
-              <img src="${iconSrc}" style="width:36px;height:36px;object-fit:contain;background:#0c0e12;border:1px solid ${pinColor};border-radius:4px;padding:3px;" alt="" />
-              <div>
-                <strong style="color:${pinColor}">${cName}</strong><br/>
-                <span>Kategori: ${catLabel}</span><br/>
-                <span>Yükseklik (Y): ${c.position.y.toFixed(1)}m</span><br/>
-                <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
-              </div>
-            </div>`,
-            { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
-          );
-
-          marker.on('click', () => {
-            window.tarkovAPI.setTarget({
-              id: `cont_${idx}`,
-              title: cName,
-              subtitle: catLabel,
-              category: 'container',
-              color: pinColor,
-              position: c.position
-            });
-          });
-
-          marker.addTo(containerLayerGroup);
+    // 2B) Değerli Eşya Tahmini Spawnları (Sabitlenen Eşya Pinlerinden BAĞIMSIZ çalışır)
+    if (showValuableSpawns) {
+      for (const v of valuableMarkers) {
+        if (!v.position) continue;
+        const latLng = window.TarkovGeo.gamePosToLatLngArray(v.position);
+        const pinImgSrc = v.iconLink || '../../assets/map-icons/valuable_bitcoin.webp';
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="width:22px;height:22px;border-radius:50%;background:rgba(12,14,18,0.92);border:2px solid ${v.highlightColor};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 7px ${v.highlightColor};">
+            <img src="${pinImgSrc}" style="width:16px;height:16px;object-fit:contain;" alt="" />
+          </div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11]
         });
+
+        const marker = L.marker(latLng, { icon, zIndexOffset: 700 });
+        const priceStr = v.bestPrice ? `${v.bestPrice.toLocaleString('tr-TR')} ₽` : '-';
+        const previewImg = v.baseImageLink || v.iconLink || '../../assets/map-icons/valuable_bitcoin.webp';
+
+        marker.bindTooltip(
+          `<div style="display:flex;gap:8px;align-items:center;">
+            <img src="${previewImg}" style="width:48px;height:48px;object-fit:contain;background:#0c0e12;border:1px solid ${v.highlightColor};border-radius:4px;" alt="" />
+            <div>
+              <strong style="color:${v.highlightColor}">💎 ${v.itemName} (${v.shortName})</strong><br/>
+              <span>Değer: <strong>${priceStr}</strong> (${v.bestSource})</span><br/>
+              ${v.otherNames ? `<span style="color:#cbd5e1">Olası Havuz: ${v.otherNames}</span><br/>` : ''}
+              <span>Kat (Y): ${v.position.y.toFixed(1)}m</span><br/>
+              <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
+            </div>
+          </div>`,
+          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -10] }
+        );
+
+        marker.on('click', () => {
+          window.tarkovAPI.setTarget({
+            id: v.id,
+            title: `💎 ${v.shortName || v.itemName}`,
+            subtitle: `Değerli Eşya (${priceStr})`,
+            category: 'loot',
+            color: v.highlightColor,
+            position: v.position
+          });
+        });
+
+        marker.addTo(looseLayerGroup);
       }
+    }
+
+    // 2C) Kategori Kategori Loot Kutuları (Sabitlenen Eşya Pinlerinden BAĞIMSIZ çalışır)
+    if (enabledCatSet.size > 0) {
+      containerMarkers.forEach((c, idx) => {
+        if (!c.position) return;
+        if (!enabledCatSet.has(c.categoryKey)) return;
+
+        const latLng = window.TarkovGeo.gamePosToLatLngArray(c.position);
+        const pinColor = c.color || '#f59e0b';
+        const iconSrc = `../../assets/map-icons/${c.iconFile || 'container_crate.png'}`;
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="width:20px;height:20px;border-radius:4px;background:rgba(12,14,18,0.88);border:1.5px solid ${pinColor};display:flex;align-items:center;justify-content:center;cursor:pointer;">
+            <img src="${iconSrc}" style="width:15px;height:15px;object-fit:contain;" alt="" />
+          </div>`,
+          iconSize: [20, 20],
+          iconAnchor: [10, 10]
+        });
+
+        const marker = L.marker(latLng, { icon, zIndexOffset: 350 });
+        const cName = c.lootContainer?.name || 'Konteyner';
+        const catLabel = c.categoryLabel || 'Loot Kutusu';
+        marker.bindTooltip(
+          `<div style="display:flex;gap:8px;align-items:center;">
+            <img src="${iconSrc}" style="width:36px;height:36px;object-fit:contain;background:#0c0e12;border:1px solid ${pinColor};border-radius:4px;padding:3px;" alt="" />
+            <div>
+              <strong style="color:${pinColor}">${cName}</strong><br/>
+              <span>Kategori: ${catLabel}</span><br/>
+              <span>Yükseklik (Y): ${c.position.y.toFixed(1)}m</span><br/>
+              <em style="color:#fcd34d">Tıklayınca güvenli rota çizer</em>
+            </div>
+          </div>`,
+          { className: 'tarkov-tooltip', direction: 'top', offset: [0, -8] }
+        );
+
+        marker.on('click', () => {
+          window.tarkovAPI.setTarget({
+            id: `cont_${idx}`,
+            title: cName,
+            subtitle: catLabel,
+            category: 'container',
+            color: pinColor,
+            position: c.position
+          });
+        });
+
+        marker.addTo(containerLayerGroup);
+      });
     }
 
     // 3) Kilitli Kapılar & Gereken Anahtarlar (Locks)
@@ -982,8 +1054,8 @@
       }
     }
 
-    // 7) Görev Hedefi Pinleri (Garanti Görev Eşyası İkonu + Görev Görseli Tooltip)
-    if (showTasksLayer && taskMarkers.length > 0) {
+    // 7) Görev Hedefi Pinleri (Seçili Görevler veya Haritanın Tüm Görevleri — birbirinden bağımsız)
+    if ((showTasksLayer || currentMapPayload.showAllMapTasksOnOverlay) && taskMarkers.length > 0) {
       for (const tm of taskMarkers) {
         if (!tm.position) continue;
         const latLng = window.TarkovGeo.gamePosToLatLngArray(tm.position);

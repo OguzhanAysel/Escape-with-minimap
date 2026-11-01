@@ -160,15 +160,15 @@
         </button>
       </nav>
 
-      <!-- 4. HARİTA KATMANLARI AKORDEONU (Varsayılan Daraltılmış) -->
+      <!-- 4. HARİTA KATMANLARI AKORDEONU (Varsayılan Açık) -->
       <div class="accordion" id="acc-layers">
-        <button type="button" class="accordion-trigger" id="btn-acc-layers" aria-expanded="false" aria-controls="panel-acc-layers">
-          <span>Harita Katmanları · <strong id="lbl-layers-count" class="tabular-nums">7/12 açık</strong></span>
+        <button type="button" class="accordion-trigger" id="btn-acc-layers" aria-expanded="true" aria-controls="panel-acc-layers">
+          <span>Harita Katmanları · <strong id="lbl-layers-count" class="tabular-nums">8/12 açık</strong></span>
           <svg class="acc-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
-        <div class="accordion-panel" id="panel-acc-layers" hidden>
+        <div class="accordion-panel" id="panel-acc-layers">
           <div class="layers-bulk-bar">
             <button type="button" id="btn-layers-all-on" class="link-btn">Tümünü aç</button>
             <span class="muted">·</span>
@@ -178,10 +178,10 @@
             <label class="layer-check-row">
               <input type="checkbox" id="chk-layer-tasks" checked />
               <img src="../../assets/map-icons/quest_objective.png" class="layer-img-icon" alt="" />
-              <span>Görev Hedefleri</span>
+              <span>Seçili Görev Hedefleri</span>
             </label>
             <label class="layer-check-row">
-              <input type="checkbox" id="chk-show-all-tasks" />
+              <input type="checkbox" id="chk-show-all-tasks" checked />
               <img src="../../assets/map-icons/quest_item.png" class="layer-img-icon" alt="" />
               <span>Haritanın Tüm Görevleri</span>
             </label>
@@ -191,8 +191,8 @@
               <span>Sabitlenen Eşya Pinleri</span>
             </label>
             <label class="layer-check-row">
-              <input type="checkbox" id="chk-show-valuable-spawns" />
-              <span class="layer-preview-icon" style="color:var(--accent)" aria-hidden="true">💎</span>
+              <input type="checkbox" id="chk-show-valuable-spawns" checked />
+              <img src="../../assets/map-icons/valuable_bitcoin.webp" class="layer-img-icon" alt="" />
               <span>Değerli Eşya (Bitcoin / LEDX / GPU)</span>
             </label>
             <label class="layer-check-row">

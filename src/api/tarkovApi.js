@@ -610,8 +610,62 @@ function enrichDataset(rawDataset) {
     }
   }
 
+  const assetsRoot = path.join(__dirname, '..', '..', 'assets');
+  const resolveLocalUrl = (remoteUrl, subFolder) => {
+    if (!remoteUrl || typeof remoteUrl !== 'string') return remoteUrl;
+    if (remoteUrl.startsWith('../../assets/')) return remoteUrl;
+    try {
+      const fname = path.basename(new URL(remoteUrl).pathname);
+      const localPath = path.join(assetsRoot, subFolder, fname);
+      if (fs.existsSync(localPath)) {
+        return `../../assets/${subFolder}/${fname}`;
+      }
+    } catch (_e) {
+      // ignore invalid URL
+    }
+    return remoteUrl;
+  };
+
+  for (const m of maps) {
+    for (const lk of m.locks || []) {
+      if (lk && lk.key && lk.key.iconLink) {
+        lk.key.iconLink = resolveLocalUrl(lk.key.iconLink, 'item-icons');
+      }
+    }
+  }
+
+  for (const t of tasks) {
+    if (t.taskImageLink) {
+      t.taskImageLink = resolveLocalUrl(t.taskImageLink, 'task-images');
+    }
+    for (const nk of t.neededKeys || []) {
+      for (const k of nk.keys || []) {
+        if (k && k.iconLink) k.iconLink = resolveLocalUrl(k.iconLink, 'item-icons');
+      }
+    }
+    for (const o of t.objectives || []) {
+      if (o.questItem && o.questItem.iconLink) {
+        o.questItem.iconLink = resolveLocalUrl(o.questItem.iconLink, 'item-icons');
+      }
+      if (o.markerItem && o.markerItem.iconLink) {
+        o.markerItem.iconLink = resolveLocalUrl(o.markerItem.iconLink, 'item-icons');
+      }
+      if (Array.isArray(o.items)) {
+        for (const it of o.items) {
+          if (it && it.iconLink) it.iconLink = resolveLocalUrl(it.iconLink, 'item-icons');
+        }
+      }
+      for (const kg of o.requiredKeys || []) {
+        for (const k of kg || []) {
+          if (k && k.iconLink) k.iconLink = resolveLocalUrl(k.iconLink, 'item-icons');
+        }
+      }
+    }
+  }
+
   // Eşya fiyat, slot başı değer ve harita spawn özetlerini hesapla
   const enrichedItems = items.map((item) => {
+    const localIcon = resolveLocalUrl(item.iconLink, 'item-icons');
     const slots = Math.max(1, (item.width || 1) * (item.height || 1));
     const sellFor = item.sellFor || [];
 
@@ -661,6 +715,8 @@ function enrichDataset(rawDataset) {
 
     return {
       ...item,
+      iconLink: localIcon,
+      baseImageLink: item.baseImageLink ? resolveLocalUrl(item.baseImageLink, 'item-icons') : localIcon,
       slots,
       fleaPrice,
       fleaAvg24hPrice,

@@ -63,18 +63,19 @@ const DEFAULT_SETTINGS = {
   autoDetectMapFromLogs: true,
   movePositionTrigger: false,
   moveTriggerCooldownMs: 4000,
-  showMapContainers: false,
-  enabledContainerCategories: [],
+  showMapContainers: true,
+  enabledContainerCategories: ['safe', 'pc', 'cache', 'weapon', 'medical'],
   showPmcSpawns: false,
   showScavSpawns: false,
-  showValuableSpawns: false,
+  showValuableSpawns: true,
   showMapLocks: false,
   showMapHazards: true,
-  showMapUtilities: false,
+  showMapUtilities: true,
   showMapExtracts: true,
   showMapCallouts: true,
   hoverInteractiveMap: true,
-  showAllMapTasksOnOverlay: false,
+  showAllMapTasksOnOverlay: true,
+  layersV3Migrated: true,
   activeTaskIds: [],
   completedTaskIds: [],
   completedObjectiveIds: [],
@@ -256,23 +257,36 @@ function loadSettings() {
       if (mergedShortcuts.zoomIn === 'Alt+=') mergedShortcuts.zoomIn = 'Alt+8';
       if (mergedShortcuts.zoomOut === 'Alt+-') mergedShortcuts.zoomOut = 'Alt+9';
 
+      const isV3 = !!parsed.layersV3Migrated;
+      const rawCats = parsed.enabledContainerCategories;
+      let normCats = ['safe', 'pc', 'cache', 'weapon', 'medical'];
+      if (isV3) {
+        if (Array.isArray(rawCats)) {
+          normCats = rawCats;
+        } else if (rawCats && typeof rawCats === 'object') {
+          normCats = Object.keys(rawCats).filter((k) => !!rawCats[k]);
+        }
+      }
+
       currentSettings = {
         ...DEFAULT_SETTINGS,
         ...parsed,
+        layersV3Migrated: true,
         // Streets takılmasını önlemek için autoDetectMapFromCoords'u güvenli modda başlat
         autoDetectMapFromCoords: parsed.autoDetectUserExplicit ? !!parsed.autoDetectMapFromCoords : false,
         gameMode: parsed.gameModeUserExplicit ? parsed.gameMode : 'pve',
         autoHomeIntervalMs: parsed.intervalUserExplicit ? parsed.autoHomeIntervalMs : 3000,
         showMapCallouts: parsed.showMapCallouts !== undefined ? !!parsed.showMapCallouts : true,
         hoverInteractiveMap: parsed.hoverInteractiveMap !== undefined ? !!parsed.hoverInteractiveMap : true,
-        showAllMapTasksOnOverlay: !!parsed.showAllMapTasksOnOverlay,
+        showAllMapTasksOnOverlay: isV3 ? !!parsed.showAllMapTasksOnOverlay : true,
         showPmcSpawns: !!parsed.showPmcSpawns,
         showScavSpawns: !!parsed.showScavSpawns,
-        showValuableSpawns: !!parsed.showValuableSpawns,
+        showValuableSpawns: isV3 ? !!parsed.showValuableSpawns : true,
         showMapLocks: !!parsed.showMapLocks,
         showMapHazards: parsed.showMapHazards !== undefined ? !!parsed.showMapHazards : true,
-        showMapUtilities: !!parsed.showMapUtilities,
-        enabledContainerCategories: Array.isArray(parsed.enabledContainerCategories) ? parsed.enabledContainerCategories : [],
+        showMapUtilities: isV3 ? !!parsed.showMapUtilities : true,
+        showMapContainers: normCats.length > 0,
+        enabledContainerCategories: normCats,
         activeTaskIds: Array.isArray(parsed.activeTaskIds) ? parsed.activeTaskIds : [],
         completedTaskIds: Array.isArray(parsed.completedTaskIds) ? parsed.completedTaskIds : [],
         completedObjectiveIds: Array.isArray(parsed.completedObjectiveIds) ? parsed.completedObjectiveIds : [],
@@ -283,7 +297,9 @@ function loadSettings() {
           zoom: typeof parsed.overlay?.zoom === 'number' && parsed.overlay.zoom >= 0.5 ? parsed.overlay.zoom : 2.5,
           layers: {
             ...DEFAULT_SETTINGS.overlay.layers,
-            ...((parsed.overlay && parsed.overlay.layers) || {})
+            ...((parsed.overlay && parsed.overlay.layers) || {}),
+            loot: isV3 ? parsed.overlay?.layers?.loot !== false : true,
+            tasks: isV3 ? parsed.overlay?.layers?.tasks !== false : true
           }
         },
         shortcuts: mergedShortcuts
@@ -911,6 +927,7 @@ async function buildOverlayMapPayload() {
   const activeTaskIdsSet = new Set(currentSettings.activeTaskIds || []);
   const completedTaskIdsSet = new Set(currentSettings.completedTaskIds || []);
   const completedObjSet = new Set(currentSettings.completedObjectiveIds || []);
+  const showSelectedTasks = currentSettings?.overlay?.layers?.tasks !== false;
   const showAllTasks = !!currentSettings.showAllMapTasksOnOverlay;
 
   const doesMapMatch = (mNorm) => {
@@ -921,10 +938,11 @@ async function buildOverlayMapPayload() {
     return false;
   };
 
-  if (ds && Array.isArray(ds.tasks)) {
+  if (ds && Array.isArray(ds.tasks) && (showSelectedTasks || showAllTasks)) {
     for (const task of ds.tasks) {
       if (completedTaskIdsSet.has(task.id)) continue;
       const isTaskSelected = activeTaskIdsSet.has(task.id);
+      if (isTaskSelected && !showSelectedTasks && !showAllTasks) continue;
       if (!isTaskSelected && !showAllTasks) continue;
 
       for (const obj of task.objectives || []) {
@@ -1024,7 +1042,9 @@ async function buildOverlayMapPayload() {
     showMapContainers: !!currentSettings.showMapContainers,
     enabledContainerCategories: Array.isArray(currentSettings.enabledContainerCategories)
       ? currentSettings.enabledContainerCategories
-      : [],
+      : currentSettings.enabledContainerCategories && typeof currentSettings.enabledContainerCategories === 'object'
+        ? Object.keys(currentSettings.enabledContainerCategories).filter((k) => !!currentSettings.enabledContainerCategories[k])
+        : [],
     showPmcSpawns: !!currentSettings.showPmcSpawns,
     showScavSpawns: !!currentSettings.showScavSpawns,
     showValuableSpawns: !!currentSettings.showValuableSpawns,
@@ -1361,6 +1381,13 @@ function setupIPC() {
     }
     if (Array.isArray(partial.enabledContainerCategories)) {
       currentSettings.enabledContainerCategories = partial.enabledContainerCategories;
+      currentSettings.showMapContainers = partial.enabledContainerCategories.length > 0;
+    } else if (partial.enabledContainerCategories && typeof partial.enabledContainerCategories === 'object') {
+      const enabledArr = Object.keys(partial.enabledContainerCategories).filter(
+        (k) => !!partial.enabledContainerCategories[k]
+      );
+      currentSettings.enabledContainerCategories = enabledArr;
+      currentSettings.showMapContainers = enabledArr.length > 0;
     }
 
     const topKeys = [
@@ -1439,6 +1466,7 @@ function setupIPC() {
       currentSettings.showMapCallouts !== prevShowCallouts ||
       currentSettings.showAllMapTasksOnOverlay !== prevShowAllTasks ||
       currentSettings.mapRenderStyle !== prevRenderStyle ||
+      Boolean(partial.overlay && partial.overlay.layers) ||
       Array.isArray(partial.pinnedItems) ||
       Array.isArray(partial.activeTaskIds) ||
       Array.isArray(partial.completedObjectiveIds) ||

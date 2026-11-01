@@ -303,7 +303,6 @@
       chkShowHazards,
       chkShowLocks,
       chkShowUtilities,
-      chkShowContainers,
       chkShowCallouts,
       chkLayerPlayer,
       chkLayerRoute
@@ -1304,13 +1303,23 @@
     chkFollowMode.checked = !!ov.followMode;
     if (chkHoverInteractive) chkHoverInteractive.checked = settings.hoverInteractiveMap !== false;
 
-    const enabledCats = settings.enabledContainerCategories || {};
+    const rawCats = settings.enabledContainerCategories;
+    const enabledCatSet = new Set(
+      Array.isArray(rawCats)
+        ? rawCats
+        : rawCats && typeof rawCats === 'object'
+          ? Object.keys(rawCats).filter((k) => !!rawCats[k])
+          : []
+    );
     containerCatCheckboxes.forEach((chk) => {
       const cat = chk.dataset.cat;
       if (cat) {
-        chk.checked = enabledCats[cat] !== false;
+        chk.checked = enabledCatSet.has(cat);
       }
     });
+    if (chkShowContainers) {
+      chkShowContainers.checked = enabledCatSet.size > 0;
+    }
 
     updateLayersSummaryBadge();
     updateContainersSummaryBadge();
@@ -1513,16 +1522,16 @@
   function updateLayers() {
     updateLayersSummaryBadge();
     updateContainersSummaryBadge();
-    const enabledContainerCategories = {};
-    containerCatCheckboxes.forEach((chk) => {
-      if (chk.dataset.cat) {
-        enabledContainerCategories[chk.dataset.cat] = chk.checked;
-      }
-    });
+    const enabledContainerCategories = containerCatCheckboxes
+      .filter((chk) => chk.checked && chk.dataset.cat)
+      .map((chk) => chk.dataset.cat);
+    if (chkShowContainers) {
+      chkShowContainers.checked = enabledContainerCategories.length > 0;
+    }
     window.tarkovAPI.updateSettings({
       showMapCallouts: chkShowCallouts ? chkShowCallouts.checked : true,
       showValuableSpawns: chkShowValuableSpawns ? chkShowValuableSpawns.checked : true,
-      showMapContainers: chkShowContainers.checked,
+      showMapContainers: enabledContainerCategories.length > 0,
       enabledContainerCategories,
       showMapExtracts: chkShowExtracts.checked,
       showPmcSpawns: chkShowPmcSpawns ? chkShowPmcSpawns.checked : false,
