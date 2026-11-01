@@ -412,6 +412,246 @@ function rotateLatLng(lat, lng, rotationDeg) {
 }
 
 /**
+ * Haritalardaki geçilemeyen nehir / göl / duvar engelleri (Köprü geçişlerini açık bırakır)
+ */
+const STATIC_MAP_OBSTACLES = {
+  customs: [
+    // Nehir: Köprüler (z: [-110,-75], [-35,10], [45,75], [115,145]) dışındaki su kesimleri
+    { minX: -120, maxX: -80, minZ: -250, maxZ: -112 },
+    { minX: -120, maxX: -80, minZ: -73, maxZ: -36 },
+    { minX: -120, maxX: -80, minZ: 12, maxZ: 43 },
+    { minX: -120, maxX: -80, minZ: 77, maxZ: 113 },
+    { minX: -120, maxX: -80, minZ: 147, maxZ: 260 }
+  ],
+  woods: [
+    // Güney Merkez Gölü (Sawyer Lake)
+    { minX: -175, maxX: 165, minZ: -420, maxZ: -215 }
+  ],
+  shoreline: [
+    // Merkez Nehir: Köprüler (z: [-130,-85], [20,75], [275,360]) dışındaki su kesimleri
+    { minX: -108, maxX: -68, minZ: -380, maxZ: -132 },
+    { minX: -108, maxX: -68, minZ: -83, maxZ: 18 },
+    { minX: -108, maxX: -68, minZ: 77, maxZ: 273 }
+  ]
+};
+
+function buildObstacleAabbs(hazards = [], mapNorm = '') {
+  const boxes = [];
+  const margin = 6; // Mayın/Sniper bölgelerinden 6m güvenli mesafe
+
+  for (const hz of hazards || []) {
+    if (Array.isArray(hz.outline) && hz.outline.length >= 3) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      for (const pt of hz.outline) {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.z < minZ) minZ = pt.z;
+        if (pt.z > maxZ) maxZ = pt.z;
+      }
+      if (Number.isFinite(minX)) {
+        boxes.push({
+          minX: minX - margin,
+          maxX: maxX + margin,
+          minZ: minZ - margin,
+          maxZ: maxZ + margin
+        });
+      }
+    } else if (hz.position) {
+      const r = 16;
+      boxes.push({
+        minX: hz.position.x - r,
+        maxX: hz.position.x + r,
+        minZ: hz.position.z - r,
+        maxZ: hz.position.z + r
+      });
+    }
+  }
+
+  const staticBoxes = STATIC_MAP_OBSTACLES[mapNorm] || [];
+  for (const sb of staticBoxes) {
+    boxes.push(sb);
+  }
+  return boxes;
+}
+
+function isPointInsideBox(x, z, box) {
+  return x >= box.minX && x <= box.maxX && z >= box.minZ && z <= box.maxZ;
+}
+
+function doesSegmentIntersectBox(x1, z1, x2, z2, box) {
+  // Liang-Barsky segment-AABB kesişim testi
+  let t0 = 0;
+  let t1 = 1;
+  const dx = x2 - x1;
+  const dz = z2 - z1;
+  const p = [-dx, dx, -dz, dz];
+  const q = [x1 - box.minX, box.maxX - x1, z1 - box.minZ, box.maxZ - z1];
+
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      if (q[i] < 0) return false;
+    } else {
+      const t = q[i] / p[i];
+      if (p[i] < 0) {
+        if (t > t1) return false;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return false;
+        if (t < t1) t1 = t;
+      }
+    }
+  }
+  return t0 <= t1;
+}
+
+function isLineOfSightClear(x1, z1, x2, z2, boxes) {
+  for (const b of boxes) {
+    // Başlangıç veya bitiş noktasının kendisi kutu içindeyse o kutuyu atla ki oyuncu sıkışmasın
+    if (isPointInsideBox(x1, z1, b) || isPointInsideBox(x2, z2, b)) continue;
+    if (doesSegmentIntersectBox(x1, z1, x2, z2, b)) return false;
+  }
+  return true;
+}
+
+/**
+ * Mayın tarlaları, sniper sınırları ve nehir/göl engellerinin etrafından dolaşan
+ * hızlı A* + Line-of-Sight yumuşatmalı güvenli rota noktaları üretir.
+ */
+function computeSafeRouteWaypoints(startPos, targetPos, hazards = [], mapNorm = '') {
+  if (!startPos || !targetPos) return [];
+  const boxes = buildObstacleAabbs(hazards, mapNorm);
+  if (boxes.length === 0 || isLineOfSightClear(startPos.x, startPos.z, targetPos.x, targetPos.z, boxes)) {
+    return [startPos, targetPos];
+  }
+
+  const geo = MAP_CONFIGS[mapNorm];
+  let minX = Math.min(startPos.x, targetPos.x) - 180;
+  let maxX = Math.max(startPos.x, targetPos.x) + 180;
+  let minZ = Math.min(startPos.z, targetPos.z) - 180;
+  let maxZ = Math.max(startPos.z, targetPos.z) + 180;
+
+  if (geo && Array.isArray(geo.bounds)) {
+    minX = Math.min(geo.bounds[0][0], geo.bounds[1][0]);
+    maxX = Math.max(geo.bounds[0][0], geo.bounds[1][0]);
+    minZ = Math.min(geo.bounds[0][1], geo.bounds[1][1]);
+    maxZ = Math.max(geo.bounds[0][1], geo.bounds[1][1]);
+  }
+
+  const GRID_N = 56;
+  const stepX = (maxX - minX) / GRID_N;
+  const stepZ = (maxZ - minZ) / GRID_N;
+  if (stepX <= 0.1 || stepZ <= 0.1) return [startPos, targetPos];
+
+  const toCell = (x, z) => ({
+    cx: Math.max(0, Math.min(GRID_N, Math.round((x - minX) / stepX))),
+    cz: Math.max(0, Math.min(GRID_N, Math.round((z - minZ) / stepZ)))
+  });
+  const toWorld = (cx, cz) => ({
+    x: minX + cx * stepX,
+    y: startPos.y ?? 0,
+    z: minZ + cz * stepZ
+  });
+
+  const startCell = toCell(startPos.x, startPos.z);
+  const goalCell = toCell(targetPos.x, targetPos.z);
+  const keyOf = (cx, cz) => cx * (GRID_N + 1) + cz;
+  const startKey = keyOf(startCell.cx, startCell.cz);
+  const goalKey = keyOf(goalCell.cx, goalCell.cz);
+
+  const isCellBlocked = (cx, cz) => {
+    const k = keyOf(cx, cz);
+    if (k === startKey || k === goalKey) return false;
+    const wx = minX + cx * stepX;
+    const wz = minZ + cz * stepZ;
+    for (const b of boxes) {
+      if (isPointInsideBox(wx, wz, b)) return true;
+    }
+    return false;
+  };
+
+  const open = [{ cx: startCell.cx, cz: startCell.cz, k: startKey, f: 0 }];
+  const gScore = new Map([[startKey, 0]]);
+  const cameFrom = new Map();
+  const closed = new Set();
+  const dirs = [
+    [1, 0, 1],
+    [-1, 0, 1],
+    [0, 1, 1],
+    [0, -1, 1],
+    [1, 1, 1.414],
+    [1, -1, 1.414],
+    [-1, 1, 1.414],
+    [-1, -1, 1.414]
+  ];
+
+  let found = false;
+  let iter = 0;
+  while (open.length > 0 && iter < 3600) {
+    iter++;
+    open.sort((a, b) => a.f - b.f);
+    const cur = open.shift();
+    if (cur.k === goalKey) {
+      found = true;
+      break;
+    }
+    if (closed.has(cur.k)) continue;
+    closed.add(cur.k);
+
+    const curG = gScore.get(cur.k) ?? Infinity;
+    for (const [dx, dz, cost] of dirs) {
+      const nx = cur.cx + dx;
+      const nz = cur.cz + dz;
+      if (nx < 0 || nx > GRID_N || nz < 0 || nz > GRID_N) continue;
+      const nk = keyOf(nx, nz);
+      if (closed.has(nk) || isCellBlocked(nx, nz)) continue;
+
+      const tentativeG = curG + cost;
+      if (tentativeG < (gScore.get(nk) ?? Infinity)) {
+        cameFrom.set(nk, cur);
+        gScore.set(nk, tentativeG);
+        const h = Math.hypot(goalCell.cx - nx, goalCell.cz - nz);
+        open.push({ cx: nx, cz: nz, k: nk, f: tentativeG + h });
+      }
+    }
+  }
+
+  if (!found) {
+    return [startPos, targetPos];
+  }
+
+  const rawPoints = [targetPos];
+  let traceKey = goalKey;
+  while (cameFrom.has(traceKey)) {
+    const prev = cameFrom.get(traceKey);
+    if (prev.k === startKey) break;
+    rawPoints.push(toWorld(prev.cx, prev.cz));
+    traceKey = prev.k;
+  }
+  rawPoints.push(startPos);
+  rawPoints.reverse();
+
+  // Line-of-Sight String Pulling ile gereksiz ara noktaları temizle
+  const smoothed = [rawPoints[0]];
+  let anchorIdx = 0;
+  while (anchorIdx < rawPoints.length - 1) {
+    let nextIdx = anchorIdx + 1;
+    for (let testIdx = rawPoints.length - 1; testIdx > anchorIdx + 1; testIdx--) {
+      if (isLineOfSightClear(rawPoints[anchorIdx].x, rawPoints[anchorIdx].z, rawPoints[testIdx].x, rawPoints[testIdx].z, boxes)) {
+        nextIdx = testIdx;
+        break;
+      }
+    }
+    smoothed.push(rawPoints[nextIdx]);
+    anchorIdx = nextIdx;
+  }
+
+  return smoothed;
+}
+
+/**
  * AŞAMA 4: Oyuncu konumundan ve bakış açısından (Yaw) seçili hedefe olan:
  * - Yatay mesafeyi (metre),
  * - Dikey yükseklik (Y) farkını ve kat etiketini ("yukarıda" / "aşağıda" / "aynı kat"),
@@ -421,19 +661,29 @@ function rotateLatLng(lat, lng, rotationDeg) {
  * @param {{x: number, y?: number, z: number}} playerPos
  * @param {number} playerYawDeg - Oyuncunun baktığı açı (0..360)
  * @param {{x: number, y?: number, z: number}} targetPos
+ * @param {Array} [hazards]
+ * @param {string} [mapNorm]
  */
-function calculateNavigationToTarget(playerPos, playerYawDeg, targetPos) {
+function calculateNavigationToTarget(playerPos, playerYawDeg, targetPos, hazards = [], mapNorm = '') {
   if (!playerPos || !targetPos) return null;
 
-  const dx = targetPos.x - playerPos.x;
-  const dz = targetPos.z - playerPos.z;
+  const waypoints = computeSafeRouteWaypoints(playerPos, targetPos, hazards, mapNorm);
+  const steerPoint = waypoints.length >= 2 ? waypoints[1] : targetPos;
+
+  let pathDistance = 0;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    pathDistance += Math.hypot(waypoints[i + 1].x - waypoints[i].x, waypoints[i + 1].z - waypoints[i].z);
+  }
+
+  const dx = steerPoint.x - playerPos.x;
+  const dz = steerPoint.z - playerPos.z;
   const dy = (targetPos.y ?? 0) - (playerPos.y ?? 0);
 
-  const horizontalDistance = Math.round(Math.hypot(dx, dz));
-  const totalDistance = Math.round(Math.hypot(dx, dy, dz));
+  const horizontalDistance = Math.round(pathDistance || Math.hypot(targetPos.x - playerPos.x, targetPos.z - playerPos.z));
+  const totalDistance = Math.round(Math.hypot(horizontalDistance, dy));
   const elevationDiff = Number(dy.toFixed(1));
 
-  // Unity koordinatlarında (+Z = 0°, +X = 90°) hedefe mutlak açı (bearing):
+  // Unity koordinatlarında (+Z = 0°, +X = 90°) ilk güvenli dönüş noktasına mutlak açı (bearing):
   let targetBearing = (Math.atan2(dx, dz) * 180) / Math.PI;
   targetBearing = (targetBearing + 360) % 360;
 
@@ -475,7 +725,8 @@ function calculateNavigationToTarget(playerPos, playerYawDeg, targetPos) {
     elevationStatus,
     targetBearing: Math.round(targetBearing),
     relativeAngle,
-    relativeText
+    relativeText,
+    waypoints
   };
 }
 
@@ -532,6 +783,7 @@ if (typeof module !== 'undefined' && module.exports) {
     mapBoundsToLeafletBounds,
     rotateLatLng,
     calculateNavigationToTarget,
+    computeSafeRouteWaypoints,
     detectActiveFloorLayer
   };
 }
@@ -544,6 +796,7 @@ if (typeof window !== 'undefined') {
     mapBoundsToLeafletBounds,
     rotateLatLng,
     calculateNavigationToTarget,
+    computeSafeRouteWaypoints,
     detectActiveFloorLayer
   };
 }

@@ -65,6 +65,36 @@ function buildGraphQLDataQuery(lang = 'tr', gameMode = 'regular') {
         faction
         position { x y z }
       }
+      spawns {
+        zoneName
+        position { x y z }
+        sides
+        categories
+      }
+      hazards {
+        hazardType
+        name
+        position { x y z }
+        outline { x y z }
+      }
+      locks {
+        lockType
+        needsPower
+        position { x y z }
+        key { id name shortName iconLink }
+      }
+      switches {
+        id
+        name
+        switchType
+        position { x y z }
+      }
+      btrStops {
+        name
+        x
+        y
+        z
+      }
       transits {
         id
         description
@@ -99,6 +129,7 @@ function buildGraphQLDataQuery(lang = 'tr', gameMode = 'regular') {
       normalizedName
       minPlayerLevel
       wikiLink
+      taskImageLink
       trader {
         id
         name
@@ -338,6 +369,53 @@ async function fetchFromOfficialTarkovDevJsonMirror(lang = 'tr', gameMode = 'reg
         faction: ex.faction,
         position: ex.position
       })),
+      spawns: (rawMap.spawns || []).map((sp) => ({
+        zoneName: sp.zoneName || '',
+        position: sp.position,
+        sides: Array.isArray(sp.sides) ? sp.sides : [],
+        categories: Array.isArray(sp.categories) ? sp.categories : []
+      })),
+      hazards: (rawMap.hazards || []).map((hz) => ({
+        id: hz.id,
+        hazardType: hz.hazardType || 'minefield',
+        name: mapsBundle.tr(hz.name) || hz.hazardType || 'Tehlike',
+        position: hz.position,
+        outline: Array.isArray(hz.outline) ? hz.outline : []
+      })),
+      locks: (rawMap.locks || []).map((lk) => {
+        const kId = typeof lk.key === 'string' ? lk.key : lk.key?.id;
+        const kItem = kId ? itemsById[kId] : null;
+        return {
+          id: lk.id,
+          lockType: lk.lockType || 'door',
+          needsPower: !!lk.needsPower,
+          position: lk.position,
+          key: kItem
+            ? {
+                id: kItem.id,
+                name: kItem.name,
+                shortName: kItem.shortName,
+                iconLink: kItem.iconLink,
+                baseImageLink: kItem.baseImageLink
+              }
+            : null
+        };
+      }),
+      switches: (rawMap.switches || []).map((sw) => ({
+        id: sw.id,
+        name: mapsBundle.tr(sw.name) || 'Şalter / Güç Kolu',
+        switchType: sw.switchType || '',
+        position: sw.position
+      })),
+      stationaryWeapons: (rawMap.stationaryWeapons || []).map((sw, idx) => ({
+        id: `statwep_${idx}`,
+        position: sw.position
+      })),
+      btrStops: (rawMap.btrStops || []).map((bs, idx) => ({
+        id: `btr_${idx}`,
+        name: mapsBundle.tr(bs.name) || 'BTR Durağı',
+        position: { x: bs.x, y: bs.y || 0, z: bs.z }
+      })),
       transits: (rawMap.transits || []).map((trItem) => ({
         id: trItem.id,
         description: mapsBundle.tr(trItem.description),
@@ -424,7 +502,8 @@ async function fetchFromOfficialTarkovDevJsonMirror(lang = 'tr', gameMode = 'reg
             id: qRaw.id,
             name: tasksBundle.tr(qRaw.name),
             shortName: tasksBundle.tr(qRaw.shortName),
-            iconLink: qRaw.iconLink || qRaw.baseImageLink || ''
+            iconLink: qRaw.iconLink || qRaw.baseImageLink || '',
+            image512pxLink: qRaw.image512pxLink || qRaw.inspectImageLink || qRaw.baseImageLink || qRaw.iconLink || ''
           };
         }
       }
@@ -472,6 +551,7 @@ async function fetchFromOfficialTarkovDevJsonMirror(lang = 'tr', gameMode = 'reg
       normalizedName: rawTask.normalizedName,
       minPlayerLevel: rawTask.minPlayerLevel || 1,
       wikiLink: rawTask.wikiLink || '',
+      taskImageLink: rawTask.taskImageLink || '',
       trader,
       map: taskMap,
       neededKeys,

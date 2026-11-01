@@ -12,7 +12,10 @@
     <aside class="sidebar" aria-label="Hızlı Kontroller ve Navigasyon">
       <div class="brand">
         <div class="brand-row">
-          <h1>TARKOV OVERLAY</h1>
+          <div style="display:flex;align-items:center;gap:var(--space-2);">
+            <img src="../../assets/icon.png" alt="" style="width:28px;height:28px;border-radius:var(--radius-s);object-fit:cover;border:1px solid var(--border);" />
+            <h1>TARKOV OVERLAY</h1>
+          </div>
           <span id="api-status-badge" class="chip chip-neutral" title="Veri kaynağı durumu">Yükleniyor...</span>
         </div>
         <span class="subtitle">Yardımcı Harita &amp; Görev Paneli</span>
@@ -160,7 +163,7 @@
       <!-- 4. HARİTA KATMANLARI AKORDEONU (Varsayılan Daraltılmış) -->
       <div class="accordion" id="acc-layers">
         <button type="button" class="accordion-trigger" id="btn-acc-layers" aria-expanded="false" aria-controls="panel-acc-layers">
-          <span>Harita Katmanları · <strong id="lbl-layers-count" class="tabular-nums">7/8 açık</strong></span>
+          <span>Harita Katmanları · <strong id="lbl-layers-count" class="tabular-nums">7/12 açık</strong></span>
           <svg class="acc-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
@@ -174,28 +177,53 @@
           <div class="layer-toggles">
             <label class="layer-check-row">
               <input type="checkbox" id="chk-layer-tasks" checked />
-              <span class="layer-preview-icon" style="color:var(--quest-star)" aria-hidden="true">★</span>
+              <img src="../../assets/map-icons/quest_objective.png" class="layer-img-icon" alt="" />
               <span>Görev Hedefleri</span>
             </label>
             <label class="layer-check-row">
               <input type="checkbox" id="chk-show-all-tasks" />
-              <span class="layer-preview-icon" style="color:var(--quest-star)" aria-hidden="true">✦</span>
+              <img src="../../assets/map-icons/quest_item.png" class="layer-img-icon" alt="" />
               <span>Haritanın Tüm Görevleri</span>
             </label>
             <label class="layer-check-row">
               <input type="checkbox" id="chk-layer-loot" checked />
-              <span class="layer-preview-icon" style="color:var(--accent)" aria-hidden="true">●</span>
+              <img src="../../assets/map-icons/loose_loot.png" class="layer-img-icon" alt="" />
               <span>Sabitlenen Eşya Pinleri</span>
             </label>
             <label class="layer-check-row">
+              <input type="checkbox" id="chk-show-valuable-spawns" />
+              <span class="layer-preview-icon" style="color:var(--accent)" aria-hidden="true">💎</span>
+              <span>Değerli Eşya (Bitcoin / LEDX / GPU)</span>
+            </label>
+            <label class="layer-check-row">
               <input type="checkbox" id="chk-show-extracts" checked />
-              <span class="layer-preview-icon" style="color:var(--ok)" aria-hidden="true">◆</span>
+              <img src="../../assets/map-icons/extract_pmc.png" class="layer-img-icon" alt="" />
               <span>Çıkış (Extract) Noktaları</span>
             </label>
             <label class="layer-check-row">
-              <input type="checkbox" id="chk-show-containers" />
-              <span class="layer-preview-icon" style="color:var(--warn)" aria-hidden="true">■</span>
-              <span>Konteyner Pinleri</span>
+              <input type="checkbox" id="chk-show-pmc-spawns" />
+              <img src="../../assets/map-icons/spawn_pmc.png" class="layer-img-icon" alt="" />
+              <span>PMC Doğma Yerleri (Spawn)</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" id="chk-show-scav-spawns" />
+              <img src="../../assets/map-icons/spawn_boss.png" class="layer-img-icon" alt="" />
+              <span>Scav &amp; Boss Doğma Yerleri</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" id="chk-show-hazards" checked />
+              <img src="../../assets/map-icons/hazard.png" class="layer-img-icon" alt="" />
+              <span>Mayın Tarlası &amp; Sniper Sınırları</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" id="chk-show-locks" />
+              <img src="../../assets/map-icons/lock.png" class="layer-img-icon" alt="" />
+              <span>Kilitli Kapılar &amp; Anahtarlar</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" id="chk-show-utilities" />
+              <img src="../../assets/map-icons/btr_stop.png" class="layer-img-icon" alt="" />
+              <span>BTR Durağı, Şalter &amp; Geçişler</span>
             </label>
             <label class="layer-check-row">
               <input type="checkbox" id="chk-show-callouts" checked />
@@ -204,13 +232,79 @@
             </label>
             <label class="layer-check-row">
               <input type="checkbox" id="chk-layer-player" checked />
-              <span class="layer-preview-icon" style="color:var(--info)" aria-hidden="true">➤</span>
+              <img src="../../assets/map-icons/player-position.png" class="layer-img-icon" alt="" />
               <span>Oyuncu Oku ve Son 10 İz</span>
             </label>
             <label class="layer-check-row">
               <input type="checkbox" id="chk-layer-route" checked />
               <span class="layer-preview-icon" style="color:var(--info)" aria-hidden="true">┄</span>
-              <span>Rota Çizgisi ve Mesafe</span>
+              <span>Güvenli Rota (Mayın Dolaşan)</span>
+            </label>
+            <!-- Eski genel konteyner kutusu uyumluluk için gizli -->
+            <input type="checkbox" id="chk-show-containers" hidden />
+          </div>
+        </div>
+      </div>
+
+      <!-- 4B. LOOT KUTULARI KATEGORİ AKORDEONU -->
+      <div class="accordion" id="acc-containers">
+        <button type="button" class="accordion-trigger" id="btn-acc-containers" aria-expanded="false" aria-controls="panel-acc-containers">
+          <span>Loot Kutuları · <strong id="lbl-containers-count" class="tabular-nums">0/9 açık</strong></span>
+          <svg class="acc-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <div class="accordion-panel" id="panel-acc-containers" hidden>
+          <div class="layers-bulk-bar">
+            <button type="button" id="btn-containers-all-on" class="link-btn">Tümünü aç</button>
+            <span class="muted">·</span>
+            <button type="button" id="btn-containers-all-off" class="link-btn">Tümünü kapat</button>
+          </div>
+          <div class="layer-toggles">
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="safe" />
+              <img src="../../assets/map-icons/container_safe.png" class="layer-img-icon" alt="" />
+              <span>Kasa &amp; Yazar Kasa (Safe)</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="pc" />
+              <img src="../../assets/map-icons/container_pc-block.png" class="layer-img-icon" alt="" />
+              <span>Bilgisayar (PC Bloğu)</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="cache" />
+              <img src="../../assets/map-icons/container_buried-barrel-cache.png" class="layer-img-icon" alt="" />
+              <span>Gizli Zula (Toprak / Varil)</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="weapon" />
+              <img src="../../assets/map-icons/container_weapon-box.png" class="layer-img-icon" alt="" />
+              <span>Silah, Cephane &amp; Bomba Kutusu</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="medical" />
+              <img src="../../assets/map-icons/container_medcase.png" class="layer-img-icon" alt="" />
+              <span>Tıbbi Çanta &amp; İlaç Kutusu</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="jacket" />
+              <img src="../../assets/map-icons/container_jacket.png" class="layer-img-icon" alt="" />
+              <span>Ceket (Anahtar Çıkanlar)</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="drawer" />
+              <img src="../../assets/map-icons/container_drawer.png" class="layer-img-icon" alt="" />
+              <span>Çekmece (Filing Cabinet)</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="bag" />
+              <img src="../../assets/map-icons/container_duffle-bag.png" class="layer-img-icon" alt="" />
+              <span>Spor Çanta, Valiz &amp; Ceset</span>
+            </label>
+            <label class="layer-check-row">
+              <input type="checkbox" class="chk-container-cat" data-cat="tech" />
+              <img src="../../assets/map-icons/container_toolbox.png" class="layer-img-icon" alt="" />
+              <span>Alet Çantası &amp; Teknik Sandık</span>
             </label>
           </div>
         </div>

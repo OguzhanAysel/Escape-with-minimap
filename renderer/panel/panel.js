@@ -153,6 +153,7 @@
   }
 
   setupAccordion('btn-acc-layers', 'panel-acc-layers');
+  setupAccordion('btn-acc-containers', 'panel-acc-containers');
   setupAccordion('btn-acc-advanced', 'panel-acc-advanced');
 
   // DOM Referansları
@@ -177,10 +178,21 @@
   const btnLayersAllOn = document.getElementById('btn-layers-all-on');
   const btnLayersAllOff = document.getElementById('btn-layers-all-off');
 
+  const lblContainersCount = document.getElementById('lbl-containers-count');
+  const btnContainersAllOn = document.getElementById('btn-containers-all-on');
+  const btnContainersAllOff = document.getElementById('btn-containers-all-off');
+  const containerCatCheckboxes = Array.from(document.querySelectorAll('.chk-container-cat'));
+
   const chkShowCallouts = document.getElementById('chk-show-callouts');
   const chkLayerLoot = document.getElementById('chk-layer-loot');
+  const chkShowValuableSpawns = document.getElementById('chk-show-valuable-spawns');
   const chkShowContainers = document.getElementById('chk-show-containers');
   const chkShowExtracts = document.getElementById('chk-show-extracts');
+  const chkShowPmcSpawns = document.getElementById('chk-show-pmc-spawns');
+  const chkShowScavSpawns = document.getElementById('chk-show-scav-spawns');
+  const chkShowHazards = document.getElementById('chk-show-hazards');
+  const chkShowLocks = document.getElementById('chk-show-locks');
+  const chkShowUtilities = document.getElementById('chk-show-utilities');
   const chkLayerTasks = document.getElementById('chk-layer-tasks');
   const chkShowAllTasks = document.getElementById('chk-show-all-tasks');
   const chkShowAllTasksTab = document.getElementById('chk-show-all-tasks-tab');
@@ -284,7 +296,13 @@
       chkLayerTasks,
       chkShowAllTasks,
       chkLayerLoot,
+      chkShowValuableSpawns,
       chkShowExtracts,
+      chkShowPmcSpawns,
+      chkShowScavSpawns,
+      chkShowHazards,
+      chkShowLocks,
+      chkShowUtilities,
       chkShowContainers,
       chkShowCallouts,
       chkLayerPlayer,
@@ -294,6 +312,12 @@
     if (lblLayersCount) {
       lblLayersCount.textContent = `${activeCount}/${checkboxes.length} açık`;
     }
+  }
+
+  function updateContainersSummaryBadge() {
+    if (!lblContainersCount) return;
+    const activeCount = containerCatCheckboxes.filter((c) => c.checked).length;
+    lblContainersCount.textContent = `${activeCount}/${containerCatCheckboxes.length} açık`;
   }
 
   function renderAutoHomeUI(st) {
@@ -710,6 +734,7 @@
 
     card.innerHTML = `
       <div class="task-card-header">
+        ${task.taskImageLink ? `<img src="${task.taskImageLink}" class="task-banner-thumb" alt="" loading="lazy" />` : ''}
         <div class="task-title-wrap">
           <div class="task-title-line">
             <span class="task-name">${task.name}</span>
@@ -1263,8 +1288,14 @@
     const layers = ov.layers || {};
     if (chkShowCallouts) chkShowCallouts.checked = settings.showMapCallouts !== false;
     chkLayerLoot.checked = !!layers.loot;
+    if (chkShowValuableSpawns) chkShowValuableSpawns.checked = settings.showValuableSpawns !== false;
     chkShowContainers.checked = !!settings.showMapContainers;
     chkShowExtracts.checked = settings.showMapExtracts !== false;
+    if (chkShowPmcSpawns) chkShowPmcSpawns.checked = !!settings.showPmcSpawns;
+    if (chkShowScavSpawns) chkShowScavSpawns.checked = !!settings.showScavSpawns;
+    if (chkShowHazards) chkShowHazards.checked = settings.showMapHazards !== false;
+    if (chkShowLocks) chkShowLocks.checked = !!settings.showMapLocks;
+    if (chkShowUtilities) chkShowUtilities.checked = settings.showMapUtilities !== false;
     chkLayerTasks.checked = !!layers.tasks;
     if (chkShowAllTasks) chkShowAllTasks.checked = !!settings.showAllMapTasksOnOverlay;
     if (chkShowAllTasksTab) chkShowAllTasksTab.checked = !!settings.showAllMapTasksOnOverlay;
@@ -1273,7 +1304,16 @@
     chkFollowMode.checked = !!ov.followMode;
     if (chkHoverInteractive) chkHoverInteractive.checked = settings.hoverInteractiveMap !== false;
 
+    const enabledCats = settings.enabledContainerCategories || {};
+    containerCatCheckboxes.forEach((chk) => {
+      const cat = chk.dataset.cat;
+      if (cat) {
+        chk.checked = enabledCats[cat] !== false;
+      }
+    });
+
     updateLayersSummaryBadge();
+    updateContainersSummaryBadge();
 
     setLanguage.value = settings.language || 'tr';
     setLevel.value = settings.playerLevel || 15;
@@ -1472,10 +1512,24 @@
 
   function updateLayers() {
     updateLayersSummaryBadge();
+    updateContainersSummaryBadge();
+    const enabledContainerCategories = {};
+    containerCatCheckboxes.forEach((chk) => {
+      if (chk.dataset.cat) {
+        enabledContainerCategories[chk.dataset.cat] = chk.checked;
+      }
+    });
     window.tarkovAPI.updateSettings({
       showMapCallouts: chkShowCallouts ? chkShowCallouts.checked : true,
+      showValuableSpawns: chkShowValuableSpawns ? chkShowValuableSpawns.checked : true,
       showMapContainers: chkShowContainers.checked,
+      enabledContainerCategories,
       showMapExtracts: chkShowExtracts.checked,
+      showPmcSpawns: chkShowPmcSpawns ? chkShowPmcSpawns.checked : false,
+      showScavSpawns: chkShowScavSpawns ? chkShowScavSpawns.checked : false,
+      showMapHazards: chkShowHazards ? chkShowHazards.checked : true,
+      showMapLocks: chkShowLocks ? chkShowLocks.checked : false,
+      showMapUtilities: chkShowUtilities ? chkShowUtilities.checked : true,
       showAllMapTasksOnOverlay: chkShowAllTasks ? chkShowAllTasks.checked : false,
       hoverInteractiveMap: chkHoverInteractive ? chkHoverInteractive.checked : true,
       overlay: {
@@ -1493,23 +1547,51 @@
   [
     chkShowCallouts,
     chkLayerLoot,
+    chkShowValuableSpawns,
     chkShowContainers,
     chkShowExtracts,
+    chkShowPmcSpawns,
+    chkShowScavSpawns,
+    chkShowHazards,
+    chkShowLocks,
+    chkShowUtilities,
     chkLayerTasks,
     chkShowAllTasks,
     chkLayerPlayer,
     chkLayerRoute,
     chkFollowMode,
-    chkHoverInteractive
+    chkHoverInteractive,
+    ...containerCatCheckboxes
   ]
     .filter(Boolean)
     .forEach((el) => {
-      el.addEventListener('change', updateLayers);
+      el.addEventListener('change', (e) => {
+        // Eğer kullanıcı tekil bir konteyner kategorisi seçtiyse ve ana kutu kapalıysa ana kutuyu da açalım
+        if (el.classList.contains('chk-container-cat') && el.checked && chkShowContainers && !chkShowContainers.checked) {
+          chkShowContainers.checked = true;
+        }
+        updateLayers();
+      });
     });
 
   if (btnLayersAllOn) {
     btnLayersAllOn.addEventListener('click', () => {
-      [chkLayerTasks, chkShowAllTasks, chkLayerLoot, chkShowExtracts, chkShowContainers, chkShowCallouts, chkLayerPlayer, chkLayerRoute]
+      [
+        chkLayerTasks,
+        chkShowAllTasks,
+        chkLayerLoot,
+        chkShowValuableSpawns,
+        chkShowExtracts,
+        chkShowPmcSpawns,
+        chkShowScavSpawns,
+        chkShowHazards,
+        chkShowLocks,
+        chkShowUtilities,
+        chkShowContainers,
+        chkShowCallouts,
+        chkLayerPlayer,
+        chkLayerRoute
+      ]
         .filter(Boolean)
         .forEach((c) => {
           c.checked = true;
@@ -1520,11 +1602,46 @@
 
   if (btnLayersAllOff) {
     btnLayersAllOff.addEventListener('click', () => {
-      [chkLayerTasks, chkShowAllTasks, chkLayerLoot, chkShowExtracts, chkShowContainers, chkShowCallouts, chkLayerPlayer, chkLayerRoute]
+      [
+        chkLayerTasks,
+        chkShowAllTasks,
+        chkLayerLoot,
+        chkShowValuableSpawns,
+        chkShowExtracts,
+        chkShowPmcSpawns,
+        chkShowScavSpawns,
+        chkShowHazards,
+        chkShowLocks,
+        chkShowUtilities,
+        chkShowContainers,
+        chkShowCallouts,
+        chkLayerPlayer,
+        chkLayerRoute
+      ]
         .filter(Boolean)
         .forEach((c) => {
           c.checked = false;
         });
+      updateLayers();
+    });
+  }
+
+  if (btnContainersAllOn) {
+    btnContainersAllOn.addEventListener('click', () => {
+      containerCatCheckboxes.forEach((c) => {
+        c.checked = true;
+      });
+      if (chkShowContainers) chkShowContainers.checked = true;
+      updateLayers();
+    });
+  }
+
+  if (btnContainersAllOff) {
+    btnContainersAllOff.addEventListener('click', () => {
+      containerCatCheckboxes.forEach((c) => {
+        c.checked = false;
+      });
+      if (chkShowContainers) chkShowContainers.checked = false;
       updateLayers();
     });
   }
