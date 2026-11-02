@@ -47,6 +47,25 @@
         </div>
       </div>
 
+      <!-- Göreve Tıklanınca Açılan Sabit Detay & Fotoğraf Paneli -->
+      <div id="task-inspect-card" class="task-inspect-card hidden">
+        <div class="task-inspect-header">
+          <div class="task-inspect-title-wrap">
+            <span class="task-inspect-trader" id="inspect-trader">Trader</span>
+            <strong class="task-inspect-name" id="inspect-name">Görev Adı</strong>
+          </div>
+          <div class="task-inspect-header-actions">
+            <button type="button" class="btn-inspect-route" id="btn-inspect-route" title="Bu göreve rota çiz">📍 Rota Çiz</button>
+            <button type="button" class="btn-inspect-close" id="btn-inspect-close" title="Kapat (Esc)">✕</button>
+          </div>
+        </div>
+        <div class="task-inspect-photos" id="inspect-photos"></div>
+        <div class="task-inspect-body">
+          <div class="task-inspect-desc" id="inspect-desc"></div>
+          <div class="task-inspect-chips" id="inspect-chips"></div>
+        </div>
+      </div>
+
       <!-- Yükleme / Durum Kutusu -->
       <div id="map-loading" class="map-loading hidden">Harita yükleniyor...</div>
     </main>

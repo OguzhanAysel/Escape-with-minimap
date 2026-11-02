@@ -1276,39 +1276,26 @@
         const locImg = tm.locationImage || tm.questItemImage || tm.questItemIcon || tm.taskImageLink || fallbackIcon;
 
         const safeTaskName = (tm.taskName || '').replace(/"/g, '&quot;');
-        const otherLocImages = (tm.allLocationImages || []).filter((img) => img && img.localPath && img.localPath !== locImg);
 
         bindSmartTooltip(
           marker,
-          `<div style="display:flex;flex-direction:column;gap:5px;width:270px;max-width:100%;">
+          `<div style="display:flex;flex-direction:column;gap:3px;max-width:240px;">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
               <strong style="color:#c084fc;font-size:11.5px;line-height:1.2;">[${tm.traderName}] ${tm.taskName}</strong>
               <span style="font-size:10px;color:#94a3b8;flex-shrink:0;">${tm.position.y.toFixed(1)}m</span>
             </div>
-            ${locImg ? `
-              <div class="task-tooltip-img-wrap" data-zoom-src="${locImg}" data-zoom-caption="${safeTaskName}" title="Tam ekran büyütmek için tıkla">
-                <img src="${locImg}" class="task-preview-img" alt="" />
-                <span class="hover-zoom-hint">🔍 Tıkla: Tam Boyut</span>
-              </div>
-            ` : ''}
-            ${otherLocImages.length > 0 ? `
-              <div class="task-tooltip-gallery">
-                ${otherLocImages.map((img) => {
-                  const safeCap = (img.caption || safeTaskName).replace(/"/g, '&quot;');
-                  return `<img src="${img.localPath}" class="task-subthumb" data-zoom-src="${img.localPath}" data-zoom-caption="${safeCap}" title="${safeCap}" alt="" />`;
-                }).join('')}
-              </div>
-            ` : ''}
-            ${tm.description ? `<div style="color:#e2e8f0;font-size:10.5px;line-height:1.3;">${tm.description}</div>` : ''}
-            ${tm.questItemName ? `<div style="color:#fde68a;font-size:11px;">📦 Eşya: <strong>${tm.questItemName}</strong></div>` : ''}
-            ${tm.requiredKeyName ? `<div style="color:#93c5fd;font-size:11px;">🔑 Anahtar: <strong>${tm.requiredKeyName}</strong></div>` : ''}
-            <div style="font-size:9.5px;color:#fcd34d;margin-top:2px;">Tıklayınca güvenli rota çizer</div>
+            ${tm.description ? `<div style="color:#cbd5e1;font-size:10.5px;line-height:1.25;">${tm.description}</div>` : ''}
+            <div style="font-size:10px;color:#38bdf8;font-weight:700;margin-top:2px;">👆 Tıkla: Detaylar & Fotoğraflar Açılır</div>
           </div>`,
           [0, -10],
           'task-smart-tooltip'
         );
 
-        marker.on('click', () => {
+        marker.on('click', (e) => {
+          if (e && e.originalEvent) {
+            e.originalEvent.stopPropagation();
+          }
+          openTaskInspectCard(tm);
           window.tarkovAPI.setTarget({
             id: tm.id,
             title: `Görev: ${tm.taskName}`,
@@ -1489,6 +1476,85 @@
     }
   });
 
+  // Göreve Tıklanınca Açılan Sabit Detay & Fotoğraf Paneli
+  const taskInspectCard = document.getElementById('task-inspect-card');
+  const inspectTrader = document.getElementById('inspect-trader');
+  const inspectName = document.getElementById('inspect-name');
+  const inspectPhotos = document.getElementById('inspect-photos');
+  const inspectDesc = document.getElementById('inspect-desc');
+  const inspectChips = document.getElementById('inspect-chips');
+  const btnInspectRoute = document.getElementById('btn-inspect-route');
+  const btnInspectClose = document.getElementById('btn-inspect-close');
+
+  function openTaskInspectCard(tm) {
+    if (!taskInspectCard || !tm) return;
+    if (inspectTrader) inspectTrader.textContent = tm.traderName || 'Trader';
+    if (inspectName) inspectName.textContent = tm.taskName;
+    if (inspectDesc) inspectDesc.textContent = tm.description || 'Bu görev hedefi için açıklama bulunmuyor.';
+
+    const safeTaskName = (tm.taskName || '').replace(/"/g, '&quot;');
+    const photos = [];
+    if (Array.isArray(tm.allLocationImages) && tm.allLocationImages.length > 0) {
+      for (const img of tm.allLocationImages) {
+        if (img && img.localPath) photos.push(img);
+      }
+    } else if (tm.locationImage) {
+      photos.push({ localPath: tm.locationImage, caption: 'Görev Konumu' });
+    }
+
+    if (inspectPhotos) {
+      if (photos.length === 0) {
+        inspectPhotos.innerHTML = '';
+        inspectPhotos.style.display = 'none';
+      } else {
+        inspectPhotos.style.display = 'flex';
+        inspectPhotos.innerHTML = photos.map((p, idx) => {
+          const cap = (p.caption || `Konum Görseli #${idx + 1}`).replace(/"/g, '&quot;');
+          return `
+            <div class="inspect-photo-card" data-zoom-src="${p.localPath}" data-zoom-caption="${safeTaskName} - ${cap}" title="Tam ekran büyütmek için tıkla">
+              <img src="${p.localPath}" alt="" />
+              <span class="photo-zoom-hint">🔍 Tıkla: Tam Boyut</span>
+              <div class="photo-caption">${cap}</div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    if (inspectChips) {
+      const chips = [];
+      if (tm.questItemName) {
+        chips.push(`<div class="inspect-chip item">📦 Eşya: <strong>${tm.questItemName}</strong></div>`);
+      }
+      if (tm.requiredKeyName) {
+        chips.push(`<div class="inspect-chip key">🔑 Anahtar: <strong>${tm.requiredKeyName}</strong></div>`);
+      }
+      chips.push(`<div class="inspect-chip dist">📍 Yükseklik: <strong>${tm.position.y.toFixed(1)}m</strong></div>`);
+      inspectChips.innerHTML = chips.join('');
+    }
+
+    if (btnInspectRoute) {
+      btnInspectRoute.onclick = () => {
+        window.tarkovAPI.setTarget({
+          id: tm.id,
+          title: `Görev: ${tm.taskName}`,
+          subtitle: tm.description || tm.traderName,
+          category: 'task',
+          color: tm.isSelectedTask ? '#a855f7' : '#d97706',
+          position: tm.position
+        });
+      };
+    }
+
+    taskInspectCard.classList.remove('hidden');
+  }
+
+  function closeTaskInspectCard() {
+    if (taskInspectCard) taskInspectCard.classList.add('hidden');
+  }
+
+  if (btnInspectClose) btnInspectClose.addEventListener('click', closeTaskInspectCard);
+
   // Görsel Büyütme Modal (Lightbox)
   const lightboxModal = document.getElementById('image-lightbox-modal');
   const lightboxBackdrop = document.getElementById('lightbox-backdrop');
@@ -1518,8 +1584,12 @@
   if (btnCloseLightbox) btnCloseLightbox.addEventListener('click', closeImageLightbox);
   if (lightboxBackdrop) lightboxBackdrop.addEventListener('click', closeImageLightbox);
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && lightboxModal && !lightboxModal.classList.contains('hidden')) {
-      closeImageLightbox();
+    if (e.key === 'Escape') {
+      if (lightboxModal && !lightboxModal.classList.contains('hidden')) {
+        closeImageLightbox();
+      } else if (taskInspectCard && !taskInspectCard.classList.contains('hidden')) {
+        closeTaskInspectCard();
+      }
     }
   });
 
