@@ -836,7 +836,11 @@ if (typeof module !== 'undefined' && module.exports) {
     rotateLatLng,
     calculateNavigationToTarget,
     computeSafeRouteWaypoints,
-    detectActiveFloorLayer
+    detectActiveFloorLayer,
+    // Rotasyon planlayıcısı (main.js) tehlike bölgesi maliyeti için kullanır
+    buildObstacleAabbs,
+    isPointInsideBox,
+    doesSegmentIntersectBox
   };
 }
 

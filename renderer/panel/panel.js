@@ -1382,12 +1382,24 @@
     chkAutoNearestTarget.checked = !!settings.autoNearestTarget;
     const chkAutoRotationEl = document.getElementById('chk-auto-rotation');
     if (chkAutoRotationEl) chkAutoRotationEl.checked = settings.autoRotationEnabled !== false;
-    const rotCatSet = new Set(settings.rotationCategories || ['task', 'container', 'loot']);
+    const rotCatSet = new Set(settings.rotationCategories || ['task', 'container', 'loot', 'extract']);
     document.querySelectorAll('.chk-rot-cat').forEach((chk) => {
       const cat = chk.dataset.rot;
       if (cat) chk.checked = rotCatSet.has(cat);
     });
-    selectAutoHomeInterval.value = String(settings.autoHomeIntervalMs || 1000);
+    const inpRotMaxStopsEl = document.getElementById('inp-rot-max-stops');
+    if (inpRotMaxStopsEl && document.activeElement !== inpRotMaxStopsEl) {
+      inpRotMaxStopsEl.value = String(settings.rotationMaxStops || 5);
+    }
+    const inpRotRaidMinEl = document.getElementById('inp-rot-raid-min');
+    if (inpRotRaidMinEl && document.activeElement !== inpRotRaidMinEl) {
+      inpRotRaidMinEl.value = String(settings.rotationRaidMinutesLeft || 0);
+    }
+    document.querySelectorAll('.chk-rot-opt').forEach((chk) => {
+      const key = chk.dataset.opt;
+      if (key) chk.checked = settings[key] !== false;
+    });
+    selectAutoHomeInterval.value = String(settings.autoHomeIntervalMs || 3000);
 
     const yOff = settings.yawOffset || 0;
     setYawOffset.value = yOff;
@@ -1911,6 +1923,42 @@
   if (chkAutoRotation) {
     chkAutoRotation.addEventListener('change', saveRotationSettings);
   }
+
+  // Rota planlayıcı ayarları (durak sayısı, kalan süre, tehlike/çıkış/değer tercihleri)
+  const inpRotMaxStops = document.getElementById('inp-rot-max-stops');
+  const inpRotRaidMin = document.getElementById('inp-rot-raid-min');
+  const rotOptCheckboxes = Array.from(document.querySelectorAll('.chk-rot-opt'));
+
+  function saveRotationPlannerSettings() {
+    const partial = {};
+    if (inpRotMaxStops) {
+      const v = Math.max(1, Math.min(10, parseInt(inpRotMaxStops.value, 10) || 5));
+      inpRotMaxStops.value = String(v);
+      partial.rotationMaxStops = v;
+    }
+    if (inpRotRaidMin) {
+      const v = Math.max(0, Math.min(60, parseInt(inpRotRaidMin.value, 10) || 0));
+      inpRotRaidMin.value = String(v);
+      partial.rotationRaidMinutesLeft = v;
+    }
+    rotOptCheckboxes.forEach((chk) => {
+      if (chk.dataset.opt) partial[chk.dataset.opt] = chk.checked;
+    });
+    window.tarkovAPI.updateSettings(partial);
+  }
+
+  if (inpRotMaxStops) inpRotMaxStops.addEventListener('change', saveRotationPlannerSettings);
+  if (inpRotRaidMin) inpRotRaidMin.addEventListener('change', saveRotationPlannerSettings);
+  rotOptCheckboxes.forEach((chk) => chk.addEventListener('change', saveRotationPlannerSettings));
+
+  function formatRotationSummary(info) {
+    if (!info || !info.stops) return '';
+    const parts = [`🧭 ${info.stops} durak`, `~${info.totalMeters} m`, `~${info.etaMinutes} dk`];
+    if (info.extractTitle) parts.push(`→ ${info.extractTitle.replace(/^Çıkış:\s*/, '')}`);
+    if (info.hazardCrossings > 0) parts.push(`⚠ ${info.hazardCrossings} tehlikeli geçiş`);
+    if (info.budgetLimited) parts.push('(süreye göre kısaltıldı)');
+    return parts.join(' • ');
+  }
   rotCatCheckboxes.forEach((chk) => {
     chk.addEventListener('change', saveRotationSettings);
   });
@@ -1922,7 +1970,8 @@
         .map((c) => c.dataset.rot);
       const res = await window.tarkovAPI.startRotation({ categories: rotationCategories });
       if (res && res.tour && res.tour.length > 0) {
-        showToast(`Zincirleme rotasyon başlatıldı (${res.tour.length} hedef sıraya alındı)`, 'ok');
+        const extra = res.rotationInfo ? ` — ~${res.rotationInfo.totalMeters} m, ~${res.rotationInfo.etaMinutes} dk` : '';
+        showToast(`Zincirleme rotasyon başlatıldı (${res.tour.length} hedef sıraya alındı)${extra}`, 'ok');
       } else {
         showToast('Haritada seçili kriterlere uygun hedef bulunamadı', 'warn');
       }
@@ -2665,6 +2714,8 @@
   });
 
   window.tarkovAPI.onPlayerUpdated((st) => {
+    const rotSummaryEl = document.getElementById('rotation-summary');
+    if (rotSummaryEl && st) rotSummaryEl.textContent = formatRotationSummary(st.rotationInfo);
     currentPlayerState = st;
     renderPlayerStatusCard();
     renderTargetSelectDropdown();

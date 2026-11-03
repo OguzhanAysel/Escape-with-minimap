@@ -3,3 +3,9 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+
+# Eski API önbelleği (uygulama artık userData/cache kullanıyor, ~25 MB)
+cache/
+
+# optimize-images yedekleri
+assets/task-locations/*.backup-*.json

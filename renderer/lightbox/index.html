@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.tarkov.dev https://tarkov.dev;" />
+  <title>Görsel</title>
+  <link rel="stylesheet" href="lightbox.css" />
+</head>
+<body>
+  <div id="lb-root" class="lb-root hidden" role="dialog" aria-modal="true">
+    <div class="lb-backdrop" id="lb-backdrop" title="Kapatmak için tıkla (Esc)"></div>
+
+    <div class="lb-stage">
+      <div class="lb-frame" id="lb-frame">
+        <img id="lb-img" alt="" draggable="false" />
+        <button type="button" class="lb-close" id="lb-close" title="Kapat (Esc)">✕</button>
+        <button type="button" class="lb-nav prev" id="lb-prev" title="Önceki (←)">‹</button>
+        <button type="button" class="lb-nav next" id="lb-next" title="Sonraki (→)">›</button>
+        <span class="lb-counter" id="lb-counter"></span>
+      </div>
+      <div class="lb-caption" id="lb-caption"></div>
+      <div class="lb-thumbs" id="lb-thumbs"></div>
+    </div>
+  </div>
+  <script src="lightbox.js"></script>
+</body>
+</html>

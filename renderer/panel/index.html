@@ -757,6 +757,31 @@
                   <span>🚪 Çıkış Noktası (En Sona)</span>
                 </label>
               </div>
+
+              <!-- Rota planlayıcı ayarları -->
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(56,189,248,0.2);">
+                <label style="font-size:11.5px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                  <span title="Çıkış hariç rotaya girecek en fazla durak">📍 En fazla durak</span>
+                  <input type="number" id="inp-rot-max-stops" min="1" max="10" step="1" value="5" style="width:56px;" />
+                </label>
+                <label style="font-size:11.5px;display:flex;align-items:center;justify-content:space-between;gap:6px;">
+                  <span title="0 = sınır yok. Rota bu sürede çıkışa yetişecek şekilde kısaltılır.">⏱ Kalan raid (dk)</span>
+                  <input type="number" id="inp-rot-raid-min" min="0" max="60" step="1" value="0" style="width:56px;" />
+                </label>
+                <label class="checkbox-label" style="font-size:11.5px;" title="Mayın tarlası, sniper sınırı ve nehirleri kesen hatlar cezalandırılır">
+                  <input type="checkbox" class="chk-rot-opt" data-opt="rotationAvoidHazards" checked />
+                  <span>☠ Tehlikeli bölgelerden kaçın</span>
+                </label>
+                <label class="checkbox-label" style="font-size:11.5px;" title="Anahtar, ücret, fişek veya co-op isteyen çıkışlar ancak çok daha yakınsa seçilir">
+                  <input type="checkbox" class="chk-rot-opt" data-opt="rotationAvoidConditionalExtracts" checked />
+                  <span>🔒 Koşullu çıkışları ele</span>
+                </label>
+                <label class="checkbox-label" style="font-size:11.5px;" title="Pahalı eşyalar biraz uzakta olsa da önce seçilir">
+                  <input type="checkbox" class="chk-rot-opt" data-opt="rotationPreferValuableLoot" checked />
+                  <span>💰 Değerli loot'u öncele</span>
+                </label>
+              </div>
+              <div id="rotation-summary" style="font-size:11px;color:#7dd3fc;margin-top:6px;min-height:14px;"></div>
             </div>
 
             <div class="form-group" style="margin-top:var(--space-2);">

@@ -4,7 +4,15 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const chokidar = require('chokidar');
 const { TarkovDataService } = require('./src/api/tarkovApi');
-const { MAP_CONFIGS, MAP_CALLOUTS, calculateNavigationToTarget } = require('./src/geo/coordinates');
+const { classifyTaskImage } = require('./src/taskImageFilter');
+const {
+  MAP_CONFIGS,
+  MAP_CALLOUTS,
+  calculateNavigationToTarget,
+  buildObstacleAabbs,
+  isPointInsideBox,
+  doesSegmentIntersectBox
+} = require('./src/geo/coordinates');
 const {
   TARKOV_SCREENSHOT_REGEX,
   parseScreenshotFilename,
@@ -37,6 +45,40 @@ let visitedTargetIds = new Set();
 let rotationTour = [];
 let lastCapturedScreenshot = null; // Envanter analizi için silinmeden önce bellekte tutulan son ekran görüntüsü
 
+// Overlay'de sabit görev kartı veya lightbox açıkken fare etkileşimini kilitleyen durum.
+// locked=true iken overlay ASLA tıklama-geçirgen (ignoreMouseEvents) moda dönmez.
+let overlayInteractionLock = { locked: false, lightbox: false };
+// Kilit açıkken geçici olarak kaydedilen global tuşlar (overlay focusable:false olduğu için
+// klavye olayları renderer'a ulaşmaz; Esc / ← / → bu yolla iletilir, oyunun odağı çalınmaz).
+const LOCK_SHORTCUT_ACTIONS = { Escape: 'escape', Left: 'prev', Right: 'next' };
+const lockShortcutsActive = new Set();
+
+/**
+ * Görev görselini sınıflandırır ve dosyanın gerçekten var olduğunu doğrular.
+ * Yalnızca 'photo' (oyun içi ekran görüntüsü) dönenler overlay'de gösterilir;
+ * 2D harita krokileri ('map'), eşya ikonları ve küçük not görselleri ('icon') elenir.
+ */
+const taskImageFileInfoCache = new Map();
+function getTaskImageFileInfo(localPath) {
+  if (taskImageFileInfoCache.has(localPath)) return taskImageFileInfoCache.get(localPath);
+  let info = { exists: false, bytes: 0 };
+  try {
+    // localPath renderer/overlay/index.html'e göre görelidir ("../../assets/task-locations/x.webp")
+    const abs = path.join(__dirname, 'renderer', 'overlay', localPath);
+    const st = fs.statSync(abs);
+    info = { exists: st.isFile(), bytes: st.size };
+  } catch (_e) {}
+  taskImageFileInfoCache.set(localPath, info);
+  return info;
+}
+
+function isDisplayableTaskPhoto(img) {
+  if (!img || !img.localPath) return false;
+  const info = getTaskImageFileInfo(img.localPath);
+  if (!info.exists) return false;
+  return classifyTaskImage(img, info) === 'photo';
+}
+
 const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
 
 const ITEM_COLORS = [
@@ -63,6 +105,11 @@ const DEFAULT_SETTINGS = {
   autoNearestTarget: false,
   autoRotationEnabled: true,
   rotationCategories: ['task', 'container', 'loot', 'extract'],
+  rotationMaxStops: 5, // çıkış hariç en fazla durak
+  rotationRaidMinutesLeft: 0, // 0 = süre sınırı yok; > 0 ise rota bu sürede çıkışa yetişecek şekilde kısalır
+  rotationAvoidConditionalExtracts: true, // anahtar / ücret / fişek / co-op isteyen çıkışları sona bırakma
+  rotationAvoidHazards: true, // mayın / sniper / nehir engelini kesen hatları cezalandır
+  rotationPreferValuableLoot: true, // pahalı loot'u öncele
   selectedMap: 'customs',
   tarkovLogsDir: 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Escape from Tarkov\\build\\Logs',
   autoDetectMapFromLogs: true,
@@ -350,9 +397,118 @@ function broadcastState() {
   }
 }
 
+/**
+ * Harita veya raid değiştiğinde çağrılır: önceki haritanın / raid'in "gezildi" (✓) işaretleri,
+ * aktif hedef, oyuncu izi ve rota önbelleği temizlenir.
+ */
+function resetRaidProgress(reason = '') {
+  visitedTargetIds.clear();
+  activeTarget = null;
+  playerState.trail = [];
+  rotationCache = null;
+  lastFloorWarnTargetId = null;
+  if (reason) addLog('info', `Gezilen hedefler sıfırlandı (${reason}).`);
+}
+
+// ---------------------------------------------------------------------------
+// Rota mesafesi: kat (Y) farkı dahil + "olası konum" gruplaması
+// ---------------------------------------------------------------------------
+const FLOOR_HEIGHT_PENALTY = 4; // 1 m yükseklik farkı ≈ 4 m yatay yürüme (merdiven bulma, kat değiştirme)
+const ARRIVAL_RADIUS_XZ = 16; // hedefe bu kadar yatay yaklaşınca "ulaşıldı"
+const ARRIVAL_MAX_DY = 2.5; // ...ama yalnızca aynı kattaysa (yükseklik farkı en fazla 2.5 m)
+const DEDUPE_GRID_XZ = 4; // aynı noktadaki mükerrer hedefleri birleştirme ızgarası (m)
+const DEDUPE_GRID_Y = 2.5; // ...farklı katlar birleştirilmez
+let lastFloorWarnTargetId = null;
+
+function verticalDelta(a, b) {
+  return a && b && typeof a.y === 'number' && typeof b.y === 'number' ? Math.abs(a.y - b.y) : 0;
+}
+
+function horizontalDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
+// Rota sıralamasında kullanılan "yürüme maliyeti": yatay mesafe + kat farkı cezası
+function routeDistance(a, b) {
+  return horizontalDistance(a, b) + verticalDelta(a, b) * FLOOR_HEIGHT_PENALTY;
+}
+
+// Aynı görev hedefinin alternatif konumları (possibleLocations) tek grup sayılır
+function getTargetGroupKey(t) {
+  if (!t) return null;
+  if (t.groupId) return t.groupId;
+  const c = candidateTargets.find((x) => x.id === t.id);
+  return (c && c.groupId) || t.id;
+}
+
+// Hedefi (ve grubundaki tüm alternatif konumları) ziyaret edildi işaretle
+function markTargetVisited(t) {
+  if (!t || !t.id) return;
+  visitedTargetIds.add(t.id);
+  const g = getTargetGroupKey(t);
+  if (g && g !== t.id) {
+    for (const c of candidateTargets) {
+      if (c.groupId === g) visitedTargetIds.add(c.id);
+    }
+  }
+}
+
+// Rotasyon planlayıcı ayarları
+const ROT_WALK_SPEED_MPS = 3.2; // ortalama hareket hızı (koşu + köşe kontrolü + durmalar)
+const ROT_STOP_SECONDS = 25; // her durakta loot / görev için harcanan süre
+const HAZARD_SEGMENT_PENALTY = 120; // mayın / sniper / nehir engelini kesen her hat için ek maliyet (m)
+const CONDITIONAL_EXTRACT_PENALTY = 250; // anahtar / ücret / fişek / co-op isteyen çıkışlar için ek maliyet (m)
+const EXTRACT_PULL = 0.35; // duraklar seçilirken çıkış yönüne çekme kuvveti
+const EXTRACT_CANDIDATES = 4; // ayrıntılı planlanacak en fazla çıkış sayısı
+const EXACT_ORDER_MAX = 6; // bu kadar veya daha az durakta sıralama kesin (tüm permütasyonlar) hesaplanır
+
+function getRotationOptions() {
+  const s = currentSettings || {};
+  const maxStops = Number.isFinite(+s.rotationMaxStops) ? Math.round(+s.rotationMaxStops) : 5;
+  const raidMin = Number.isFinite(+s.rotationRaidMinutesLeft) ? +s.rotationRaidMinutesLeft : 0;
+  return {
+    maxStops: Math.max(1, Math.min(10, maxStops)),
+    raidMinutesLeft: Math.max(0, Math.min(60, raidMin)), // 0 = süre sınırı yok
+    avoidConditionalExtracts: s.rotationAvoidConditionalExtracts !== false,
+    avoidHazards: s.rotationAvoidHazards !== false,
+    preferValuableLoot: s.rotationPreferValuableLoot !== false
+  };
+}
+
+function isConditionalExtract(c) {
+  if (!c) return false;
+  if (c.requiresKey) return true;
+  const note = String(c.subtitle || '');
+  return /Anahtar|Fişe|Ücretli|Ortak|Koşullu/i.test(note);
+}
+
+let rotationCache = null;
+let rotationInfo = null; // { totalMeters, etaMinutes, stops, hazardCrossings, extractTitle }
+
 function computeRotationTour() {
+  rotationInfo = null;
   if (!currentSettings || !currentSettings.autoRotationEnabled) {
     rotationTour = activeTarget ? [activeTarget] : [];
+    return rotationTour;
+  }
+
+  const opts = getRotationOptions();
+
+  // Önbellek: girdiler (oyuncu ~5 m içinde, aktif hedef, ziyaret edilenler, aday listesi, ayarlar) aynıysa yeniden hesaplama
+  const pp = playerState.current?.position;
+  const cacheKey = [
+    pp ? `${Math.round(pp.x / 5)},${Math.round(pp.z / 5)},${Math.round((pp.y || 0) / 2)}` : '-',
+    activeTarget ? activeTarget.id : '-',
+    visitedTargetIds.size,
+    currentSettings.selectedMap,
+    JSON.stringify(opts),
+    (currentSettings.rotationCategories || []).join(','),
+    (currentSettings.activeTaskIds || []).length
+  ].join('|');
+  if (rotationCache && rotationCache.key === cacheKey && rotationCache.candidates === candidateTargets) {
+    rotationTour = rotationCache.tour.slice();
+    rotationInfo = rotationCache.info;
+    if (!activeTarget && rotationTour.length > 0) activeTarget = rotationTour[0];
     return rotationTour;
   }
 
@@ -375,7 +531,43 @@ function computeRotationTour() {
     return rotationTour;
   }
 
-  const mainPool = [];
+  // --- Tehlike bölgeleri (mayın, sniper sınırı, nehir/göl) -> hat maliyeti ---
+  let hazardBoxes = [];
+  if (opts.avoidHazards) {
+    try {
+      const ds = dataService ? dataService.currentData : null;
+      const apiMap = ds && Array.isArray(ds.maps) ? ds.maps.find((m) => m.normalizedName === mapNorm) : null;
+      hazardBoxes = buildObstacleAabbs((apiMap && apiMap.hazards) || [], mapNorm);
+    } catch (_e) {
+      hazardBoxes = [];
+    }
+  }
+  const hazardCrossings = (a, b) => {
+    let n = 0;
+    for (const bx of hazardBoxes) {
+      if (isPointInsideBox(a.x, a.z, bx) || isPointInsideBox(b.x, b.z, bx)) continue;
+      if (doesSegmentIntersectBox(a.x, a.z, b.x, b.z, bx)) n++;
+    }
+    return n;
+  };
+  // Hat maliyeti önbelleği (konum nesnesi kimliğine göre): permütasyon / 2-opt aynı hatları defalarca sorar
+  const legCache = new Map();
+  const legCost = (a, b) => {
+    let row = legCache.get(a);
+    if (!row) {
+      row = new Map();
+      legCache.set(a, row);
+    }
+    let v = row.get(b);
+    if (v === undefined) {
+      v = routeDistance(a, b) + (hazardBoxes.length ? hazardCrossings(a, b) * HAZARD_SEGMENT_PENALTY : 0);
+      row.set(b, v);
+    }
+    return v;
+  };
+
+  // --- Aday havuzu: mükerrerler (aynı nokta + aynı kat) birleştirilir, olası konumlar gruplanır ---
+  const groups = new Map(); // groupKey -> [aday...]
   const seenCoords = new Set();
   for (const c of candidateTargets) {
     if (!c || !c.position || visitedTargetIds.has(c.id)) continue;
@@ -383,59 +575,278 @@ function computeRotationTour() {
     if (!rotCats.has(c.category)) continue;
     if (c.category === 'task' && activeTaskIdsSet.size > 0 && !c.isSelectedTask) continue;
 
-    const coordKey = `${Math.round(c.position.x / 4)}_${Math.round(c.position.z / 4)}`;
+    const yBand = typeof c.position.y === 'number' ? Math.round(c.position.y / DEDUPE_GRID_Y) : 0;
+    const coordKey = `${Math.round(c.position.x / DEDUPE_GRID_XZ)}_${Math.round(c.position.z / DEDUPE_GRID_XZ)}_${yBand}`;
     if (seenCoords.has(coordKey) && (!activeTarget || activeTarget.id !== c.id)) continue;
     seenCoords.add(coordKey);
-    mainPool.push(c);
+
+    const key = c.groupId || c.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
   }
 
-  const tour = [];
-  const usedIds = new Set();
-  let curPos = refPos;
-
-  if (activeTarget && !visitedTargetIds.has(activeTarget.id) && activeTarget.position) {
-    tour.push(activeTarget);
-    usedIds.add(activeTarget.id);
-    curPos = activeTarget.position;
+  // --- Değerli loot önceliği: pahalı eşyalar "daha yakın" sayılır ---
+  let maxLootValue = 0;
+  for (const members of groups.values()) {
+    for (const m of members) if (m.category === 'loot' && m.value > maxLootValue) maxLootValue = m.value;
   }
+  const preferFactor = (c) => {
+    let f = 1;
+    if (c.category === 'task' && c.isSelectedTask) f *= 0.85;
+    if (opts.preferValuableLoot && c.category === 'loot' && maxLootValue > 0 && c.value > 0) {
+      f *= 1 - 0.35 * Math.sqrt(c.value / maxLootValue);
+    }
+    return f;
+  };
 
-  const maxMainStops = 5;
-  while (tour.length < maxMainStops) {
-    let best = null;
-    let bestDist = Infinity;
-    for (const cand of mainPool) {
-      if (usedIds.has(cand.id)) continue;
-      // Görev hedeflerine hafif öncelik bonusu ver
-      const rawDist = Math.hypot(cand.position.x - curPos.x, cand.position.z - curPos.z);
-      const weightedDist = cand.category === 'task' && cand.isSelectedTask ? rawDist * 0.85 : rawDist;
-      if (weightedDist < bestDist) {
-        bestDist = weightedDist;
-        best = cand;
+  // --- Sabit başlangıç: kullanıcı/oyun tarafından seçilmiş aktif hedef ---
+  const fixedStart = activeTarget && !visitedTargetIds.has(activeTarget.id) && activeTarget.position ? activeTarget : null;
+  const fixedGroup = fixedStart ? getTargetGroupKey(fixedStart) : null;
+  const stopMeters = ROT_STOP_SECONDS * ROT_WALK_SPEED_MPS;
+  const budgetMeters = opts.raidMinutesLeft > 0 ? opts.raidMinutesLeft * 60 * ROT_WALK_SPEED_MPS : Infinity;
+
+  // Yolun toplam maliyeti: ref -> [duraklar] -> (çıkış)
+  const pathCost = (stops, endPos) => {
+    let cost = 0;
+    let cur = refPos;
+    for (let i = 0; i < stops.length; i++) {
+      const pos = stops[i].position;
+      cost += legCost(cur, pos) + stopMeters;
+      cur = pos;
+    }
+    if (endPos) cost += legCost(cur, endPos);
+    return cost;
+  };
+  // Sabit ilk durak (aktif hedef) sonrası sıralanabilir kısmın maliyeti
+  const seqCost = (seq, endPos) => {
+    let cost = 0;
+    let cur = fixedStart ? fixedStart.position : refPos;
+    for (let i = 0; i < seq.length; i++) {
+      const pos = seq[i].position;
+      cost += legCost(cur, pos);
+      cur = pos;
+    }
+    if (endPos) cost += legCost(cur, endPos);
+    return cost;
+  };
+
+  // 2-opt: kesişen rota parçalarını ters çevirerek toplam yolu kısaltır (ilk sabit durak hariç)
+  const twoOpt = (seq, endPos) => {
+    const head = fixedStart ? [fixedStart] : [];
+    let bestSeq = seq.slice();
+    let bestCost = pathCost(head.concat(bestSeq), endPos);
+    let improved = true;
+    let guard = 0;
+    while (improved && guard++ < 50) {
+      improved = false;
+      for (let i = 0; i < bestSeq.length - 1; i++) {
+        for (let k = i + 1; k < bestSeq.length; k++) {
+          const cand = bestSeq.slice(0, i).concat(bestSeq.slice(i, k + 1).reverse(), bestSeq.slice(k + 1));
+          const c = pathCost(head.concat(cand), endPos);
+          if (c + 0.01 < bestCost) {
+            bestSeq = cand;
+            bestCost = c;
+            improved = true;
+          }
+        }
       }
     }
-    if (!best) break;
-    tour.push(best);
-    usedIds.add(best.id);
-    curPos = best.position;
-  }
+    return bestSeq;
+  };
 
-  // Eğer rotasyonda Çıkış (Extract) seçiliyse, son durağa en yakın PMC/Shared çıkışı zincirin sonuna ekle
-  if (rotCats.has('extract') && (tour.length > 0 || mainPool.length === 0)) {
-    const extStart = tour.length > 0 ? tour[tour.length - 1].position : curPos;
-    let bestExt = null;
-    let bestExtDist = Infinity;
-    for (const c of candidateTargets) {
-      if (c.category !== 'extract' || !c.position || visitedTargetIds.has(c.id) || usedIds.has(c.id)) continue;
-      if (c.faction === 'scav') continue;
-      const d = Math.hypot(c.position.x - extStart.x, c.position.z - extStart.z);
-      if (d < bestExtDist) {
-        bestExtDist = d;
-        bestExt = c;
+  // Kesin çözüm: durak sayısı küçükken (<= 6 -> en fazla 720 sıralama) tüm permütasyonları dener
+  const exactOrder = (seq, endPos) => {
+    const arr = seq.slice();
+    let bestSeq = arr.slice();
+    let bestCost = seqCost(arr, endPos);
+    const c = new Array(arr.length).fill(0);
+    let i = 0;
+    while (i < arr.length) {
+      if (c[i] < i) {
+        const j = i % 2 === 0 ? 0 : c[i];
+        [arr[j], arr[i]] = [arr[i], arr[j]];
+        const cost = seqCost(arr, endPos);
+        if (cost + 0.01 < bestCost) {
+          bestCost = cost;
+          bestSeq = arr.slice();
+        }
+        c[i]++;
+        i = 0;
+      } else {
+        c[i] = 0;
+        i++;
       }
     }
-    if (bestExt) {
-      tour.push(bestExt);
+    return bestSeq;
+  };
+
+  // Or-opt: tek bir durağı rotada başka bir sıraya taşımayı dener (2-opt'un kaçırdığı "geri dönüşleri" düzeltir)
+  const orOpt = (seq, endPos) => {
+    const head = fixedStart ? [fixedStart] : [];
+    let bestSeq = seq.slice();
+    let bestCost = pathCost(head.concat(bestSeq), endPos);
+    let improved = true;
+    let guard = 0;
+    while (improved && guard++ < 50) {
+      improved = false;
+      for (let i = 0; i < bestSeq.length; i++) {
+        const node = bestSeq[i];
+        const rest = bestSeq.slice(0, i).concat(bestSeq.slice(i + 1));
+        for (let j = 0; j <= rest.length; j++) {
+          if (j === i) continue;
+          const cand = rest.slice(0, j).concat([node], rest.slice(j));
+          const c = pathCost(head.concat(cand), endPos);
+          if (c + 0.01 < bestCost) {
+            bestSeq = cand;
+            bestCost = c;
+            improved = true;
+          }
+        }
+      }
     }
+    return bestSeq;
+  };
+
+  // Gruplu duraklarda komşulara göre en uygun alternatif konumu seç
+  const repickMembers = (seq, endPos) => {
+    const out = seq.slice();
+    for (let i = 0; i < out.length; i++) {
+      const key = out[i].groupId || out[i].id;
+      const members = groups.get(key) || [out[i]];
+      if (members.length < 2) continue;
+      const prev = i === 0 ? (fixedStart ? fixedStart.position : refPos) : out[i - 1].position;
+      const next = i < out.length - 1 ? out[i + 1].position : endPos;
+      let best = out[i];
+      let bestC = Infinity;
+      for (const m of members) {
+        const c = legCost(prev, m.position) + (next ? legCost(m.position, next) : 0);
+        if (c < bestC) {
+          bestC = c;
+          best = m;
+        }
+      }
+      out[i] = best;
+    }
+    return out;
+  };
+
+  const planFor = (ext) => {
+    const endPos = ext ? ext.position : null;
+    const usedGroups = new Set(fixedGroup ? [fixedGroup] : []);
+    const rejected = new Set();
+    const seq = [];
+    let cur = fixedStart ? fixedStart.position : refPos;
+    let acc = fixedStart ? legCost(refPos, fixedStart.position) + stopMeters : 0;
+    const slots = opts.maxStops - (fixedStart ? 1 : 0);
+
+    while (seq.length < slots) {
+      const curToEnd = endPos ? routeDistance(cur, endPos) : 0;
+      let best = null;
+      let bestScore = Infinity;
+      for (const [key, members] of groups) {
+        if (usedGroups.has(key)) continue;
+        for (const m of members) {
+          if (rejected.has(m.id)) continue;
+          const pf = preferFactor(m);
+          // Çıkışa çekme terimi ucuz (tehlikesiz) mesafeyle hesaplanır
+          const pull = endPos ? EXTRACT_PULL * (routeDistance(m.position, endPos) - curToEnd) : 0;
+          // Alt sınır: tehlike cezası yalnızca ekler; alt sınır bile kötüyse pahalı hesaba girme
+          if (routeDistance(cur, m.position) * pf + pull >= bestScore) continue;
+          const score = legCost(cur, m.position) * pf + pull;
+          if (score < bestScore) {
+            bestScore = score;
+            best = m;
+          }
+        }
+      }
+      if (!best) break;
+      // Süre bütçesi: bu durak + (varsa) çıkışa dönüş sığmıyorsa bu adayı ele
+      const need = acc + legCost(cur, best.position) + stopMeters + (endPos ? legCost(best.position, endPos) : 0);
+      if (need > budgetMeters) {
+        rejected.add(best.id);
+        continue;
+      }
+      acc += legCost(cur, best.position) + stopMeters;
+      seq.push(best);
+      usedGroups.add(best.groupId || best.id);
+      cur = best.position;
+    }
+
+    let improvedSeq = seq;
+    for (let pass = 0; pass < 3; pass++) {
+      // Az durakta tüm sıralamaları dene (kesin en kısa), fazlasında 2-opt + or-opt
+      const ordered = improvedSeq.length <= EXACT_ORDER_MAX ? exactOrder(improvedSeq, endPos) : orOpt(twoOpt(improvedSeq, endPos), endPos);
+      const repicked = repickMembers(ordered, endPos);
+      const changed = repicked.some((m, i) => m !== ordered[i]);
+      improvedSeq = repicked;
+      if (!changed) break; // alternatif konum değişmediyse sıralama zaten en iyi
+    }
+    const stops = (fixedStart ? [fixedStart] : []).concat(improvedSeq);
+    let cost = pathCost(stops, endPos);
+    if (ext && opts.avoidConditionalExtracts && isConditionalExtract(ext)) cost += CONDITIONAL_EXTRACT_PENALTY;
+    return { stops, ext, cost, fits: pathCost(stops, endPos) <= budgetMeters };
+  };
+
+  // --- Çıkış seçimi: her uygun çıkış için rota planla, en iyisini al ---
+  let extractOptions = [null];
+  if (rotCats.has('extract')) {
+    const exts = candidateTargets.filter(
+      (c) => c.category === 'extract' && c.position && !visitedTargetIds.has(c.id) && c.faction !== 'scav'
+    );
+    if (exts.length > 0) extractOptions = exts;
+  }
+
+  // Performans: çok çıkış varsa önce çıkışsız kaba bir plan yap, ona en yakın EXTRACT_CANDIDATES çıkışı değerlendir
+  if (extractOptions.length > EXTRACT_CANDIDATES && extractOptions[0]) {
+    const rough = planFor(null).stops;
+    const pts = rough.length > 0 ? rough.map((t) => t.position) : [refPos];
+    const score = (ext) => {
+      let best = Infinity;
+      for (const p of pts) best = Math.min(best, routeDistance(p, ext.position));
+      return best + (opts.avoidConditionalExtracts && isConditionalExtract(ext) ? CONDITIONAL_EXTRACT_PENALTY : 0);
+    };
+    extractOptions = extractOptions
+      .map((e) => ({ e, d: score(e) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, EXTRACT_CANDIDATES)
+      .map((x) => x.e);
+  }
+
+  let bestPlan = null;
+  for (const ext of extractOptions) {
+    const plan = planFor(ext);
+    if (
+      !bestPlan ||
+      (plan.fits && !bestPlan.fits) ||
+      (plan.fits === bestPlan.fits && plan.stops.length > bestPlan.stops.length) ||
+      (plan.fits === bestPlan.fits && plan.stops.length === bestPlan.stops.length && plan.cost < bestPlan.cost)
+    ) {
+      bestPlan = plan;
+    }
+  }
+
+  const tour = bestPlan ? bestPlan.stops.slice() : [];
+  if (bestPlan && bestPlan.ext) tour.push(bestPlan.ext);
+
+  // Özet bilgi (panel / overlay için)
+  if (tour.length > 0) {
+    let meters = 0;
+    let crossings = 0;
+    let cur = refPos;
+    for (const t of tour) {
+      meters += routeDistance(cur, t.position);
+      if (hazardBoxes.length) crossings += hazardCrossings(cur, t.position);
+      cur = t.position;
+    }
+    const stopCount = bestPlan.stops.length;
+    rotationInfo = {
+      totalMeters: Math.round(meters),
+      etaMinutes: Math.round(((meters / ROT_WALK_SPEED_MPS + stopCount * ROT_STOP_SECONDS) / 60) * 10) / 10,
+      stops: stopCount,
+      hazardCrossings: crossings,
+      extractTitle: bestPlan.ext ? bestPlan.ext.title : null,
+      budgetLimited: Number.isFinite(budgetMeters)
+    };
   }
 
   if (!activeTarget && tour.length > 0 && (currentSettings.autoNearestTarget || currentSettings.autoRotationEnabled)) {
@@ -443,6 +854,7 @@ function computeRotationTour() {
   }
 
   rotationTour = tour;
+  rotationCache = { key: cacheKey, candidates: candidateTargets, tour: tour.slice(), info: rotationInfo };
   return rotationTour;
 }
 
@@ -474,6 +886,7 @@ function broadcastPlayerState() {
     activeTarget,
     navInfo,
     rotationTour,
+    rotationInfo,
     visitedTargetIds: [...visitedTargetIds]
   };
 
@@ -504,7 +917,7 @@ function selectNearestTargetToPlayer(shouldBroadcast = true, filterCategory = nu
   for (const t of candidateTargets) {
     if (!t.position || visitedTargetIds.has(t.id)) continue;
     if (filterCategory && t.category !== filterCategory) continue;
-    const d = Math.hypot(t.position.x - p.x, t.position.z - p.z);
+    const d = routeDistance(t.position, p);
     if (d < bestDist) {
       bestDist = d;
       best = t;
@@ -526,7 +939,7 @@ function cycleNextTarget() {
 
   const prevCat = activeTarget ? activeTarget.category : null;
   if (activeTarget && activeTarget.id) {
-    visitedTargetIds.add(activeTarget.id);
+    markTargetVisited(activeTarget);
     addLog('info', `Hedef tamamlandı / lootlandı işaretlendi: ${activeTarget.title}`);
     activeTarget = null;
   }
@@ -563,11 +976,14 @@ async function handleParsedPlayerPosition(parsed, fullFilePath = null) {
   // Ekran görüntüsü silinmeden önce envanter analizi için belleğe al
   if (fullFilePath && fs.existsSync(fullFilePath)) {
     try {
+      // Ham baytlar tutulur; base64'e yalnızca envanter analizi istendiğinde çevrilir
+      // (her 3 sn'de gelen ekran görüntüsünü base64 yapmak boşa CPU/bellek harcıyordu)
       const buf = fs.readFileSync(fullFilePath);
-      const ext = path.extname(fullFilePath).toLowerCase() === '.jpg' ? 'jpeg' : 'png';
+      const ext = /\.jpe?g$/i.test(fullFilePath) ? 'jpeg' : 'png';
       lastCapturedScreenshot = {
         filename: path.basename(fullFilePath),
-        dataUrl: `data:image/${ext};base64,${buf.toString('base64')}`,
+        ext,
+        buffer: buf,
         timestamp: Date.now()
       };
     } catch (_e) {
@@ -575,16 +991,25 @@ async function handleParsedPlayerPosition(parsed, fullFilePath = null) {
     }
   }
 
-  // Oyuncu aktif hedefe <= 16 metre yaklaştıysa otomatik olarak tamamlandı işaretle ve sıradaki hedefe geç!
+  // Oyuncu aktif hedefe yatayda <= 16 m ve AYNI KATTA (dy <= 2.5 m) ise tamamlandı işaretle, sıradakine geç
   if (activeTarget && activeTarget.position && parsed.position) {
-    const distToActive = Math.hypot(
-      activeTarget.position.x - parsed.position.x,
-      activeTarget.position.z - parsed.position.z
-    );
-    if (distToActive <= 16) {
+    const distToActive = horizontalDistance(activeTarget.position, parsed.position);
+    const dyToActive = verticalDelta(activeTarget.position, parsed.position);
+    if (distToActive <= ARRIVAL_RADIUS_XZ && dyToActive > ARRIVAL_MAX_DY) {
+      if (lastFloorWarnTargetId !== activeTarget.id) {
+        lastFloorWarnTargetId = activeTarget.id;
+        const dir = activeTarget.position.y > parsed.position.y ? 'yukarıda' : 'aşağıda';
+        addLog(
+          'info',
+          `Hedefin hemen yakınındasınız ama farklı kattasınız: "${activeTarget.title}" ${dyToActive.toFixed(1)} m ${dir}.`
+        );
+      }
+    }
+    if (distToActive <= ARRIVAL_RADIUS_XZ && dyToActive <= ARRIVAL_MAX_DY) {
       const prevCat = activeTarget.category;
       const doneTitle = activeTarget.title;
-      visitedTargetIds.add(activeTarget.id);
+      markTargetVisited(activeTarget);
+      lastFloorWarnTargetId = null;
       activeTarget = null;
       computeRotationTour();
       if (!activeTarget) {
@@ -592,7 +1017,7 @@ async function handleParsedPlayerPosition(parsed, fullFilePath = null) {
       }
       addLog(
         'info',
-        `Hedefe ulaşıldı (${distToActive.toFixed(1)}m <= 16m): "${doneTitle}" tamamlandı, sıradaki en yakın hedefe geçildi.`
+        `Hedefe ulaşıldı (${distToActive.toFixed(1)} m, kat farkı ${dyToActive.toFixed(1)} m): "${doneTitle}" tamamlandı, sıradaki en yakın hedefe geçildi.`
       );
     }
   }
@@ -607,8 +1032,7 @@ async function handleParsedPlayerPosition(parsed, fullFilePath = null) {
     if (detected && detected.mapNormalizedName && detected.mapNormalizedName !== currentSettings.selectedMap) {
       const oldMap = currentSettings.selectedMap;
       currentSettings.selectedMap = detected.mapNormalizedName;
-      playerState.trail = [];
-      activeTarget = null;
+      resetRaidProgress();
       saveSettings();
       broadcastState();
       await broadcastOverlayMapData();
@@ -774,14 +1198,19 @@ function checkTarkovApplicationLogsForMap() {
     const signature = `${appLogFile}_${matches.length}_${presetKey}`;
 
     if (signature === lastDetectedLogSignature) return;
+    const isFirstRead = lastDetectedLogSignature === '';
     lastDetectedLogSignature = signature;
 
     const mappedNorm = SCENE_TO_MAP[presetKey];
-    if (mappedNorm && mappedNorm !== currentSettings.selectedMap) {
+    if (mappedNorm && mappedNorm === currentSettings.selectedMap && !isFirstRead) {
+      // Aynı haritada yeni raid: önceki raid'in ✓ işaretleri bu raid için geçersiz
+      resetRaidProgress(`${mappedNorm.toUpperCase()} haritasında yeni raid algılandı`);
+      broadcastPlayerState();
+      broadcastOverlayMapData();
+    } else if (mappedNorm && mappedNorm !== currentSettings.selectedMap) {
       const oldMap = currentSettings.selectedMap;
       currentSettings.selectedMap = mappedNorm;
-      playerState.trail = [];
-      activeTarget = null;
+      resetRaidProgress();
       saveSettings();
       broadcastState();
       broadcastOverlayMapData();
@@ -846,6 +1275,7 @@ async function buildOverlayMapPayload() {
           subtitle: `Eşya Spawn (${markerObj.bestPrice.toLocaleString('tr-TR')} ₽)`,
           category: 'loot',
           color: markerObj.color,
+          value: markerObj.bestPrice || 0,
           position: pos
         });
       });
@@ -994,7 +1424,7 @@ async function buildOverlayMapPayload() {
 
   const containerMarkers = rawContainers.map((c, idx) => {
     const cat = classifyContainer(c.lootContainer?.normalizedName);
-    const cId = `cont_${idx}`;
+    const cId = `cont_${mapNorm}_${idx}`; // haritaya özel: başka haritadaki aynı sıradaki kutuyla çakışmaz
     if (c.position && enabledCatsSet.has(cat.key)) {
       nextCandidates.push({
         id: cId,
@@ -1148,6 +1578,7 @@ async function buildOverlayMapPayload() {
       subtitle: ex.conditionNote || `Extract (${(ex.faction || 'all').toUpperCase()})`,
       category: 'extract',
       faction: (ex.faction || 'all').toLowerCase(),
+      requiresKey: !!ex.requiredKey,
       color: '#10b981',
       position: ex.position
     });
@@ -1184,32 +1615,37 @@ async function buildOverlayMapPayload() {
         for (const z of obj.zones || []) {
           const zMapNorm = z.map?.normalizedName || task.map?.normalizedName;
           if (doesMapMatch(zMapNorm) && z.position) {
-            pointsOnMap.push({ position: z.position, zoneId: z.id });
+            pointsOnMap.push({ position: z.position, zoneId: z.id, source: 'zone' });
           }
         }
         for (const loc of obj.possibleLocations || []) {
           const lMapNorm = loc.map?.normalizedName || task.map?.normalizedName;
           if (doesMapMatch(lMapNorm) && Array.isArray(loc.positions)) {
             for (const p of loc.positions) {
-              if (p) pointsOnMap.push({ position: p, zoneId: null });
+              if (p) pointsOnMap.push({ position: p, zoneId: null, source: 'possible' });
             }
           }
         }
 
+        // "Olası konumlar" aynı eşyanın alternatif spawn noktalarıdır: biri bulununca hepsi kapanır.
+        // (Birden fazla olası nokta varsa tek grup; zone'lar kendi başına durak olarak kalır.)
+        const possibleCount = pointsOnMap.filter((x) => x.source === 'possible').length;
+        const possibleGroupId = possibleCount > 1 ? `taskgrp_${task.id}_${obj.id}` : null;
+
         pointsOnMap.forEach((pt, idx) => {
           const markerId = `task_${task.id}_${obj.id}_${idx}`;
+          const groupId = pt.source === 'possible' && possibleGroupId ? possibleGroupId : null;
           const firstKey = obj.requiredKeys?.[0]?.[0] || task.neededKeys?.[0]?.keys?.[0] || null;
-          const isMapPhoto = (c = '', orig = '') => {
-            const t = `${c} ${orig}`.toLowerCase();
-            return t.includes('marked on map') || t.includes('on map') || t.includes('harita') || t.includes('map.png') || t.includes('map.jpg') || t.includes('overview') || t.includes('layout');
-          };
-          const locImages = (Array.isArray(task.locationImages) ? task.locationImages : []).filter(img => img && !isMapPhoto(img.caption, img.originalName));
+          // Yalnızca gerçek oyun içi ekran görüntüleri: 2D harita krokileri ve eşya ikonları elenir
+          const locImages = (Array.isArray(task.locationImages) ? task.locationImages : [])
+            .filter(isDisplayableTaskPhoto)
+            .map((img) => ({ localPath: img.localPath, caption: img.caption || '' }));
           const bestLocImg = locImages[0]?.localPath || null;
           const tMarker = {
             id: markerId,
             taskId: task.id,
             taskName: task.name,
-            taskImageLink: task.taskImageLink || '',
+            taskImageLink: '', // 2D harita şeması olabileceği için asla görev fotoğrafı olarak kullanılmaz
             locationImage: bestLocImg,
             allLocationImages: locImages,
             traderName: task.trader?.name || 'Trader',
@@ -1232,7 +1668,9 @@ async function buildOverlayMapPayload() {
               '',
             requiredKeyName: firstKey ? `${firstKey.name} (${firstKey.shortName || ''})` : null,
             requiredKeyIcon: firstKey ? firstKey.iconLink : null,
-            position: pt.position
+            position: pt.position,
+            groupId,
+            groupSize: groupId ? possibleCount : 1
           };
           taskMarkers.push(tMarker);
 
@@ -1243,7 +1681,9 @@ async function buildOverlayMapPayload() {
             category: 'task',
             isSelectedTask: isTaskSelected,
             color: isTaskSelected ? '#a855f7' : '#eab308',
-            position: pt.position
+            position: pt.position,
+            groupId,
+            groupSize: groupId ? possibleCount : 1
           });
         });
       }
@@ -1326,6 +1766,12 @@ function applyOverlayWindowState() {
     overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   } else {
     overlayWindow.hide();
+    // Overlay gizlenince açık görev kartı / lightbox kilidini bırak
+    if (overlayInteractionLock.locked) {
+      overlayInteractionLock = { locked: false, lightbox: false };
+      closeLightboxWindow(false);
+      sendOverlayKeyAction('closeAll');
+    }
   }
 
   if (ov.editMode) {
@@ -1333,8 +1779,184 @@ function applyOverlayWindowState() {
     overlayWindow.setFocusable(true);
     overlayWindow.setResizable(true);
   } else {
-    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    // Görev kartı veya lightbox açıkken etkileşim kesilmez (ayar güncellemeleri bile kilidi bozmaz)
+    const keepInteractive =
+      ov.visible && overlayInteractionLock.locked && currentSettings.hoverInteractiveMap !== false;
+    if (keepInteractive) {
+      overlayWindow.setIgnoreMouseEvents(false);
+    } else {
+      overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    }
     overlayWindow.setFocusable(false);
+  }
+  syncLockShortcuts();
+  // setAlwaysOnTop çağrısı overlay'i öne almış olabilir; açık lightbox her zaman en üstte kalsın
+  if (lightboxOpen && lightboxWindow && !lightboxWindow.isDestroyed()) {
+    lightboxWindow.moveTop();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ekran Ortasında Görsel Büyütme Penceresi (Lightbox)
+// Overlay küçük bir pencere olduğu için fotoğraf, overlay'in bulunduğu monitörü kaplayan
+// ayrı, şeffaf, odak çalmayan (focusable:false) bir pencerede ekranın ortasında gösterilir.
+// ---------------------------------------------------------------------------
+let lightboxWindow = null;
+let lightboxReady = false;
+let lightboxOpen = false;
+let pendingLightboxPayload = null;
+
+function getLightboxWindow() {
+  if (lightboxWindow && !lightboxWindow.isDestroyed()) return lightboxWindow;
+
+  lightboxReady = false;
+  lightboxWindow = new BrowserWindow({
+    show: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    frame: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: false, // oyunun odağını çalmaz; Esc / ← / → global kısayollardan gelir
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    hasShadow: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  lightboxWindow.setAlwaysOnTop(true, 'screen-saver');
+  lightboxWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  lightboxWindow.loadFile(path.join(__dirname, 'renderer', 'lightbox', 'index.html'));
+
+  lightboxWindow.webContents.on('did-finish-load', () => {
+    lightboxReady = true;
+    if (pendingLightboxPayload && lightboxOpen) {
+      lightboxWindow.webContents.send('lightbox:show', pendingLightboxPayload);
+    }
+    pendingLightboxPayload = null;
+  });
+
+  lightboxWindow.on('closed', () => {
+    const wasOpen = lightboxOpen;
+    lightboxWindow = null;
+    lightboxReady = false;
+    lightboxOpen = false;
+    if (wasOpen) sendOverlayKeyAction('lightboxClosed');
+  });
+
+  return lightboxWindow;
+}
+
+function sanitizeLightboxPayload(payload) {
+  const photos = (Array.isArray(payload?.photos) ? payload.photos : [])
+    .map((p) => ({
+      src: String(p?.src || ''),
+      caption: String(p?.caption || '').slice(0, 300)
+    }))
+    // Yalnızca uygulamanın kendi görselleri veya tarkov.dev görselleri
+    .filter((p) => p.src.startsWith('../../assets/') || /^https:\/\/([a-z0-9-]+\.)*tarkov\.dev\//i.test(p.src))
+    .slice(0, 12);
+  const index = Number.isInteger(payload?.index) ? Math.max(0, Math.min(photos.length - 1, payload.index)) : 0;
+  return { photos, index, title: String(payload?.title || '').slice(0, 200) };
+}
+
+function openLightboxWindow(rawPayload) {
+  const payload = sanitizeLightboxPayload(rawPayload);
+  if (payload.photos.length === 0) return false;
+
+  const win = getLightboxWindow();
+  // Overlay hangi monitördeyse o monitörün tamamını kapla (fotoğraf ekranın ortasında)
+  let display = screen.getPrimaryDisplay();
+  try {
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      display = screen.getDisplayMatching(overlayWindow.getBounds());
+    } else {
+      display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    }
+  } catch (_e) {}
+  win.setBounds(display.bounds);
+
+  lightboxOpen = true;
+  if (lightboxReady) {
+    win.webContents.send('lightbox:show', payload);
+  } else {
+    pendingLightboxPayload = payload;
+  }
+  win.setIgnoreMouseEvents(false);
+  win.showInactive();
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.moveTop();
+  return true;
+}
+
+function closeLightboxWindow(notifyOverlay = true) {
+  if (!lightboxOpen) return;
+  lightboxOpen = false;
+  pendingLightboxPayload = null;
+  if (lightboxWindow && !lightboxWindow.isDestroyed()) {
+    lightboxWindow.webContents.send('lightbox:hide');
+    lightboxWindow.hide();
+  }
+  if (notifyOverlay) sendOverlayKeyAction('lightboxClosed');
+}
+
+// Geçici kilit kısayolları: lightbox penceresi açıksa tuşlar ona, değilse overlay'e gider
+function routeLockKey(action) {
+  if (lightboxOpen && lightboxWindow && !lightboxWindow.isDestroyed()) {
+    if (action === 'escape') {
+      closeLightboxWindow(true);
+    } else {
+      lightboxWindow.webContents.send('lightbox:nav', action);
+    }
+    return;
+  }
+  sendOverlayKeyAction(action);
+}
+
+function sendOverlayKeyAction(action) {
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.webContents.send('overlay:keyAction', action);
+  }
+}
+
+/**
+ * Kilit durumuna göre Esc (ve lightbox açıksa ← / →) global kısayollarını kaydeder/kaldırır.
+ * Kullanıcının kendi kısayolları bu tuşları kullanıyorsa onlara dokunulmaz.
+ */
+function syncLockShortcuts() {
+  const want = new Set();
+  const visible = !!currentSettings?.overlay?.visible;
+  if (overlayInteractionLock.locked && visible) {
+    want.add('Escape');
+    if (overlayInteractionLock.lightbox) {
+      want.add('Left');
+      want.add('Right');
+    }
+  }
+
+  for (const acc of [...lockShortcutsActive]) {
+    if (!want.has(acc)) {
+      try {
+        globalShortcut.unregister(acc);
+      } catch (_e) {}
+      lockShortcutsActive.delete(acc);
+    }
+  }
+
+  for (const acc of want) {
+    if (lockShortcutsActive.has(acc)) continue;
+    try {
+      if (globalShortcut.isRegistered(acc)) continue;
+      const ok = globalShortcut.register(acc, () => routeLockKey(LOCK_SHORTCUT_ACTIONS[acc]));
+      if (ok) lockShortcutsActive.add(acc);
+    } catch (_e) {}
   }
 }
 
@@ -1447,6 +2069,7 @@ function createPanelWindow() {
 
 function registerShortcuts() {
   globalShortcut.unregisterAll();
+  lockShortcutsActive.clear(); // unregisterAll geçici kilit tuşlarını da kaldırdı; sonda yeniden senkronlanır
   const sc = currentSettings.shortcuts;
   const statusReport = {};
 
@@ -1510,6 +2133,7 @@ function registerShortcuts() {
       const idx = mapOrder.indexOf(currentSettings.selectedMap);
       const nextIdx = (idx + 1) % mapOrder.length;
       currentSettings.selectedMap = mapOrder[nextIdx];
+      resetRaidProgress();
       saveSettings();
       broadcastState();
       broadcastOverlayMapData();
@@ -1556,6 +2180,7 @@ function registerShortcuts() {
     }
   }
 
+  syncLockShortcuts();
   return statusReport;
 }
 
@@ -1656,6 +2281,11 @@ function setupIPC() {
       'yawOffset',
       'autoNearestTarget',
       'autoRotationEnabled',
+      'rotationMaxStops',
+      'rotationRaidMinutesLeft',
+      'rotationAvoidConditionalExtracts',
+      'rotationAvoidHazards',
+      'rotationPreferValuableLoot',
       'selectedMap',
       'tarkovLogsDir',
       'autoDetectMapFromLogs',
@@ -1928,7 +2558,7 @@ function setupIPC() {
     }
     broadcastState();
     broadcastPlayerState();
-    return { ok: true, activeTarget, rotationTour };
+    return { ok: true, activeTarget, rotationTour, tour: rotationTour, rotationInfo };
   });
 
   ipcMain.handle('screenshot:getLatestDataUrl', async () => {
@@ -1948,7 +2578,7 @@ function setupIPC() {
         const latest = files[0];
         if (!lastCapturedScreenshot || latest.mtime >= lastCapturedScreenshot.timestamp - 2000) {
           const buf = fs.readFileSync(latest.full);
-          const ext = path.extname(latest.full).toLowerCase() === '.jpg' ? 'jpeg' : 'png';
+          const ext = /\.jpe?g$/i.test(latest.full) ? 'jpeg' : 'png';
           return {
             ok: true,
             filename: latest.name,
@@ -1957,11 +2587,11 @@ function setupIPC() {
         }
       }
     }
-    if (lastCapturedScreenshot && lastCapturedScreenshot.dataUrl) {
+    if (lastCapturedScreenshot && lastCapturedScreenshot.buffer) {
       return {
         ok: true,
         filename: lastCapturedScreenshot.filename,
-        dataUrl: lastCapturedScreenshot.dataUrl
+        dataUrl: `data:image/${lastCapturedScreenshot.ext};base64,${lastCapturedScreenshot.buffer.toString('base64')}`
       };
     }
     return {
@@ -1978,11 +2608,35 @@ function setupIPC() {
       overlayWindow.setIgnoreMouseEvents(true, { forward: true });
       return { ok: true };
     }
-    if (interactive) {
+    // Sabit görev kartı / lightbox açıkken "etkileşimi kapat" istekleri yok sayılır
+    if (interactive || overlayInteractionLock.locked) {
       overlayWindow.setIgnoreMouseEvents(false);
     } else {
       overlayWindow.setIgnoreMouseEvents(true, { forward: true });
     }
+    return { ok: true };
+  });
+
+  // Ekran ortasında görsel büyütme penceresi
+  ipcMain.handle('lightbox:open', (_event, payload) => ({ ok: openLightboxWindow(payload) }));
+  ipcMain.handle('lightbox:close', () => {
+    closeLightboxWindow(true);
+    return { ok: true };
+  });
+
+  // Sabit görev kartı / lightbox açık-kapalı bildirimi: etkileşim kilidi + geçici Esc/←/→ kısayolları
+  ipcMain.handle('overlay:setInteractionLock', (_event, payload) => {
+    const locked = !!(payload && payload.locked);
+    const lightbox = locked && !!(payload && payload.lightbox);
+    overlayInteractionLock = { locked, lightbox };
+
+    if (overlayWindow && !overlayWindow.isDestroyed() && !currentSettings.overlay.editMode) {
+      if (locked && currentSettings.hoverInteractiveMap !== false) {
+        overlayWindow.setIgnoreMouseEvents(false);
+      }
+      // Kilit kalkınca renderer, fare pencere dışındaysa setHoverInteractive(false) gönderir
+    }
+    syncLockShortcuts();
     return { ok: true };
   });
 

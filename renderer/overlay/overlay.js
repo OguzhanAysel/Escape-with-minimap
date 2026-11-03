@@ -43,35 +43,92 @@
   let loadedMapKey = null;
   let loadedRenderStyle = null;
   let isMouseDraggingMap = false;
+  let isTaskPinnedOpen = false;
+  let isLightboxOpen = false;
 
-  // Fareyi Overlay üzerine götürdüğünüzde haritayı doğrudan sürükleyip yakınlaştırabilme (Hover-Interactive)
+  // ---------------------------------------------------------------------------
+  // Fare Etkileşimi (Hover-Interactive) + Görev Kartı / Lightbox Kilidi
+  // ---------------------------------------------------------------------------
+  // pointerInside: fare overlay penceresinin (document) içinde mi? Lightbox #overlay-root'un
+  // dışında (body altında) olduğu için root yerine tüm document izlenir.
+  let pointerInside = false;
+  let lastLockSent = null;
+
+  function isHoverAllowed() {
+    return !!currentSettings && currentSettings.hoverInteractiveMap !== false && !currentSettings.overlay?.editMode;
+  }
+
+  function isInteractionLocked() {
+    return isTaskPinnedOpen || isLightboxOpen;
+  }
+
+  // Ana sürece kilit durumunu bildirir (yalnızca değiştiğinde)
+  function syncInteractionLock() {
+    const payload = { locked: isInteractionLocked(), lightbox: isLightboxOpen };
+    const key = `${payload.locked}|${payload.lightbox}`;
+    if (key === lastLockSent) return;
+    lastLockSent = key;
+    if (window.tarkovAPI.setInteractionLock) {
+      window.tarkovAPI.setInteractionLock(payload);
+    }
+  }
+
+  // Tek merkezden etkileşim kararı: kilitliyse ASLA tıklama-geçirgen moda dönülmez
+  function updateHoverInteractivity() {
+    syncInteractionLock();
+    if (currentSettings?.overlay?.editMode) {
+      rootEl.classList.remove('hover-interactive');
+      return; // düzenleme modunda pencere zaten tam etkileşimli
+    }
+    const wantInteractive = isInteractionLocked() || isMouseDraggingMap || (pointerInside && isHoverAllowed());
+    rootEl.classList.toggle('hover-interactive', wantInteractive);
+    window.tarkovAPI.setHoverInteractive(wantInteractive);
+  }
+
   function setupHoverInteractivity() {
-    rootEl.addEventListener('mouseenter', () => {
-      if (currentSettings && currentSettings.hoverInteractiveMap !== false && !currentSettings.overlay?.editMode) {
-        rootEl.classList.add('hover-interactive');
-        window.tarkovAPI.setHoverInteractive(true);
-      }
+    const docEl = document.documentElement;
+
+    docEl.addEventListener('mouseenter', () => {
+      pointerInside = true;
+      updateHoverInteractivity();
     });
 
-    rootEl.addEventListener('mouseleave', () => {
-      if (!isMouseDraggingMap && !currentSettings?.overlay?.editMode) {
-        rootEl.classList.remove('hover-interactive');
-        window.tarkovAPI.setHoverInteractive(false);
-      }
+    docEl.addEventListener('mouseleave', () => {
+      pointerInside = false;
+      if (isInteractionLocked() || isMouseDraggingMap) return;
+      updateHoverInteractivity();
     });
+
+    // mouseenter kaçırılırsa (ör. DOM değişimi sonrası) ilk harekette telafi et
+    document.addEventListener(
+      'mousemove',
+      () => {
+        if (!pointerInside) {
+          pointerInside = true;
+          updateHoverInteractivity();
+        }
+      },
+      { passive: true }
+    );
 
     window.addEventListener('mouseup', () => {
       if (isMouseDraggingMap) {
         isMouseDraggingMap = false;
-        if (!rootEl.matches(':hover') && !currentSettings?.overlay?.editMode) {
-          rootEl.classList.remove('hover-interactive');
-          window.tarkovAPI.setHoverInteractive(false);
-        }
+        updateHoverInteractivity();
       }
     });
   }
 
   setupHoverInteractivity();
+
+  function escapeHtml(str) {
+    return String(str == null ? '' : str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   function buildMapCRS(geoConfig) {
     let scaleX = 1;
@@ -148,10 +205,20 @@
       isMouseDraggingMap = true;
     });
 
-    window.addEventListener('resize', () => {
-      if (leafletMap) leafletMap.invalidateSize();
+    // Haritanın boş bir yerine tıklanınca sabit görev kartını kapat
+    // (marker ve popup tıklamaları haritaya yayılmaz; sürükleme sonrası click Leaflet tarafından bastırılır)
+    leafletMap.on('click', () => {
+      if (isTaskPinnedOpen && !isLightboxOpen) {
+        closePinnedTaskPopup();
+      }
     });
+
   }
+
+  // Pencere boyutu değişince haritayı yeniden ölç (tek dinleyici; her harita değişiminde eklenmez)
+  window.addEventListener('resize', () => {
+    if (leafletMap) leafletMap.invalidateSize();
+  });
 
   function applyZoomDelta(delta) {
     if (!leafletMap) return;
@@ -271,6 +338,12 @@
       opacity: 1
     });
 
+    // Leaflet'in kendi "fare çıkınca HEMEN kapat" davranışını kaldır: kapanmayı aşağıdaki
+    // gecikmeli mantık yönetir, böylece fare marker'dan tooltip'e geçerken kart kaybolmaz.
+    marker.off('mouseout', marker.closeTooltip);
+    // Açmayı da biz yapıyoruz: yön (sağ/sol/üst/alt) açmadan ÖNCE hesaplanmalı
+    marker.off('mouseover', marker._openTooltip);
+
     let closeTimer = null;
 
     function cancelClose() {
@@ -313,6 +386,8 @@
 
       if (!marker.isTooltipOpen()) {
         marker.openTooltip();
+      } else {
+        tip.update(); // yön değiştiyse konumu yenile
       }
 
       // Tooltip DOM elementine fare girdiğinde kapanmayı iptal et
@@ -684,6 +759,7 @@
     containerLayerGroup.clearLayers();
     extractLayerGroup.clearLayers();
     taskLayerGroup.clearLayers();
+    hideTaskHoverTooltip(); // eski marker'a bağlı hover kartı kalmasın
 
     const showLootLayer = currentSettings?.overlay?.layers?.loot !== false;
     const showTasksLayer = currentSettings?.overlay?.layers?.tasks !== false;
@@ -901,7 +977,7 @@
         if (!c.position) return;
         if (!enabledCatSet.has(c.categoryKey)) return;
 
-        const contId = `cont_${idx}`;
+        const contId = c.id || `cont_${idx}`; // ana süreçteki haritaya özel kimlik
         const isVisited = visitedSet.has(contId);
         const latLng = window.TarkovGeo.gamePosToLatLngArray(c.position);
         const pinColor = isVisited ? '#22c55e' : c.color || '#f59e0b';
@@ -1264,7 +1340,7 @@
 
         const icon = L.divIcon({
           className: '',
-          html: `<div style="position:relative;width:22px;height:22px;border-radius:5px;background:rgba(18,12,28,0.92);border:2px solid ${borderCol};opacity:${isVisited ? 0.58 : 1};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.9);" title="${tm.taskName}">
+          html: `<div style="position:relative;width:22px;height:22px;border-radius:5px;background:rgba(18,12,28,0.92);border:2px solid ${borderCol};opacity:${isVisited ? 0.58 : 1};display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 0 6px rgba(0,0,0,0.9);">
             <img src="${pinImg}" style="width:17px;height:17px;object-fit:contain;" alt="" />
             ${isVisited ? '<span style="position:absolute;top:-5px;right:-5px;background:#16a34a;color:#fff;font-size:8px;font-weight:900;border-radius:50%;width:12px;height:12px;display:flex;align-items:center;justify-content:center;">✓</span>' : ''}
           </div>`,
@@ -1272,43 +1348,27 @@
           iconAnchor: [11, 11]
         });
 
-        const marker = L.marker(latLng, { icon, zIndexOffset: 900 });
-        const locImg = tm.locationImage || tm.questItemImage || tm.questItemIcon || tm.taskImageLink || fallbackIcon;
+        const marker = L.marker(latLng, { icon, zIndexOffset: 900, bubblingMouseEvents: false });
 
-        const safeTaskName = (tm.taskName || '').replace(/"/g, '&quot;');
+        // Hover: hafif, tıklanamaz (pointer-events:none) bilgi kartı
+        marker.on('mouseover', () => showTaskHoverTooltip(tm, marker));
+        marker.on('mouseout', hideTaskHoverTooltip);
 
-        bindSmartTooltip(
-          marker,
-          `<div style="display:flex;flex-direction:column;gap:3px;max-width:240px;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-              <strong style="color:#c084fc;font-size:11.5px;line-height:1.2;">[${tm.traderName}] ${tm.taskName}</strong>
-              <span style="font-size:10px;color:#94a3b8;flex-shrink:0;">${tm.position.y.toFixed(1)}m</span>
-            </div>
-            ${tm.description ? `<div style="color:#cbd5e1;font-size:10.5px;line-height:1.25;">${tm.description}</div>` : ''}
-            <div style="font-size:10px;color:#38bdf8;font-weight:700;margin-top:2px;">👆 Tıkla: Detaylar & Fotoğraflar Açılır</div>
-          </div>`,
-          [0, -10],
-          'task-smart-tooltip'
-        );
-
+        // Tıklama: hover kartını kapat, görev kartını pin üzerinde sabitle
         marker.on('click', (e) => {
           if (e && e.originalEvent) {
-            e.originalEvent.stopPropagation();
+            L.DomEvent.stop(e.originalEvent);
           }
-          openTaskInspectCard(tm);
-          window.tarkovAPI.setTarget({
-            id: tm.id,
-            title: `Görev: ${tm.taskName}`,
-            subtitle: tm.description || tm.traderName,
-            category: 'task',
-            color: tm.isSelectedTask ? '#a855f7' : '#d97706',
-            position: tm.position
-          });
+          hideTaskHoverTooltip();
+          openPinnedTaskPopup(tm, marker);
         });
 
         marker.addTo(taskLayerGroup);
       }
     }
+
+    // Harita yeniden çizildiyse (ayar/oyuncu güncellemesi) sabit görev kartını koru
+    restorePinnedTaskAfterRender(taskMarkers);
 
     renderLegend(
       currentMapPayload.pinnedItems || [],
@@ -1423,6 +1483,7 @@
   window.tarkovAPI.getSettings().then((res) => {
     if (res && res.settings) {
       renderSettings(res.settings);
+      updateHoverInteractivity();
     }
   });
 
@@ -1446,6 +1507,8 @@
 
   window.tarkovAPI.onSettingsUpdated((settings) => {
     renderSettings(settings);
+    // Ana süreç ayar değişiminde pencereyi tıklama-geçirgen yapmış olabilir; mevcut durumu yeniden uygula
+    updateHoverInteractivity();
   });
 
   window.tarkovAPI.onAutoHomeUpdated(renderAutoHomeState);
@@ -1476,65 +1539,173 @@
     }
   });
 
-  // Göreve Tıklanınca Açılan Sabit Detay & Fotoğraf Paneli
-  const taskInspectCard = document.getElementById('task-inspect-card');
-  const inspectTrader = document.getElementById('inspect-trader');
-  const inspectName = document.getElementById('inspect-name');
-  const inspectPhotos = document.getElementById('inspect-photos');
-  const inspectDesc = document.getElementById('inspect-desc');
-  const inspectChips = document.getElementById('inspect-chips');
-  const btnInspectRoute = document.getElementById('btn-inspect-route');
-  const btnInspectClose = document.getElementById('btn-inspect-close');
 
-  function openTaskInspectCard(tm) {
-    if (!taskInspectCard || !tm) return;
-    if (inspectTrader) inspectTrader.textContent = tm.traderName || 'Trader';
-    if (inspectName) inspectName.textContent = tm.taskName;
-    if (inspectDesc) inspectDesc.textContent = tm.description || 'Bu görev hedefi için açıklama bulunmuyor.';
+  // ---------------------------------------------------------------------------
+  // Görev Pini: Hover Bilgi Kartı (hafif, tıklanamaz)
+  // ---------------------------------------------------------------------------
+  let taskHoverTooltip = null;
 
-    const safeTaskName = (tm.taskName || '').replace(/"/g, '&quot;');
+  function buildTaskHoverHtml(tm) {
+    const chips = [];
+    if (tm.questItemName) chips.push(`<span class="task-hover-chip item">📦 ${escapeHtml(tm.questItemName)}</span>`);
+    if (tm.requiredKeyName) chips.push(`<span class="task-hover-chip key">🔑 ${escapeHtml(tm.requiredKeyName)}</span>`);
+    if (tm.groupSize > 1) chips.push(`<span class="task-hover-chip">🎲 Olası konum (${tm.groupSize} noktadan biri)</span>`);
+    const elev = tm.position && typeof tm.position.y === 'number' ? `${tm.position.y.toFixed(1)}m` : '';
+    const photoCount = Array.isArray(tm.allLocationImages) ? tm.allLocationImages.length : 0;
+    return `<div class="task-hover-tooltip">
+        <div class="task-hover-header">
+          <span class="task-hover-trader">[${escapeHtml(tm.traderName || 'Trader')}]</span>
+          <strong class="task-hover-name">${escapeHtml(tm.taskName || '')}</strong>
+          ${elev ? `<span class="task-hover-dist">${elev}</span>` : ''}
+        </div>
+        ${tm.description ? `<div class="task-hover-desc">${escapeHtml(tm.description)}</div>` : ''}
+        ${chips.length ? `<div class="task-hover-chips">${chips.join('')}</div>` : ''}
+        <div class="task-hover-hint">👆 Tıkla: Görevi Sabitle${photoCount > 0 ? ' &amp; Fotoğrafları Aç' : ''}</div>
+      </div>`;
+  }
+
+  function showTaskHoverTooltip(tm, marker) {
+    if (!leafletMap || !tm || !marker) return;
+    // Bu görev zaten sabitlenmişse hover kartı açma (sabit kartın üstüne binmesin)
+    if (pinnedTask && pinnedTask.tm && pinnedTask.tm.id === tm.id) return;
+    hideTaskHoverTooltip();
+
+    const latLng = marker.getLatLng();
+    const pt = leafletMap.latLngToContainerPoint(latLng);
+    const sz = leafletMap.getSize();
+    let direction = 'top';
+    let offset = [0, -12];
+    if (pt.x < 150) {
+      direction = 'right';
+      offset = [12, 0];
+    } else if (pt.x > sz.x - 150) {
+      direction = 'left';
+      offset = [-12, 0];
+    } else if (pt.y < 150) {
+      direction = 'bottom';
+      offset = [0, 12];
+    }
+
+    taskHoverTooltip = L.tooltip({
+      className: 'tarkov-tooltip task-smart-tooltip',
+      direction,
+      offset,
+      opacity: 1,
+      interactive: false
+    })
+      .setLatLng(latLng)
+      .setContent(buildTaskHoverHtml(tm))
+      .addTo(leafletMap);
+  }
+
+  function hideTaskHoverTooltip() {
+    if (taskHoverTooltip) {
+      try {
+        taskHoverTooltip.remove();
+      } catch (_e) {}
+      taskHoverTooltip = null;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Görev Pini: Tıklayınca Sabitlenen Kart (Pinned Task Popup)
+  // ---------------------------------------------------------------------------
+  let activeTaskPopup = null;
+  let pinnedTask = null; // { tm, photos }
+
+  function collectTaskPhotos(tm) {
     const photos = [];
-    if (Array.isArray(tm.allLocationImages) && tm.allLocationImages.length > 0) {
-      for (const img of tm.allLocationImages) {
-        if (img && img.localPath) photos.push(img);
-      }
-    } else if (tm.locationImage) {
-      photos.push({ localPath: tm.locationImage, caption: 'Görev Konumu' });
+    const seen = new Set();
+    const list = Array.isArray(tm.allLocationImages) && tm.allLocationImages.length > 0
+      ? tm.allLocationImages
+      : tm.locationImage
+        ? [{ localPath: tm.locationImage, caption: 'Görev Konumu' }]
+        : [];
+    for (const img of list) {
+      if (!img || !img.localPath || seen.has(img.localPath)) continue;
+      seen.add(img.localPath);
+      photos.push({ src: img.localPath, caption: img.caption || '' });
+    }
+    return photos;
+  }
+
+  function buildPhotosHtml(photos) {
+    if (photos.length === 0) return '';
+
+    if (photos.length === 1) {
+      const p = photos[0];
+      const cap = escapeHtml(p.caption || 'Görev Konumu');
+      return `
+        <div class="task-popup-single-photo" data-zoom-idx="0" title="Tam boyut görmek için tıkla">
+          <img src="${escapeHtml(p.src)}" alt="" draggable="false" />
+          <span class="popup-photo-badge">📷 Konum</span>
+          <span class="popup-zoom-hint">🔍 Tıkla: Tam Boyut</span>
+          <div class="popup-photo-caption">${cap}</div>
+        </div>`;
     }
 
-    if (inspectPhotos) {
-      if (photos.length === 0) {
-        inspectPhotos.innerHTML = '';
-        inspectPhotos.style.display = 'none';
-      } else {
-        inspectPhotos.style.display = 'flex';
-        inspectPhotos.innerHTML = photos.map((p, idx) => {
-          const cap = (p.caption || `Konum Görseli #${idx + 1}`).replace(/"/g, '&quot;');
-          return `
-            <div class="inspect-photo-card" data-zoom-src="${p.localPath}" data-zoom-caption="${safeTaskName} - ${cap}" title="Tam ekran büyütmek için tıkla">
-              <img src="${p.localPath}" alt="" />
-              <span class="photo-zoom-hint">🔍 Tıkla: Tam Boyut</span>
-              <div class="photo-caption">${cap}</div>
-            </div>
-          `;
-        }).join('');
-      }
+    const labels = photos.length === 2 ? ['Konum', 'Detay'] : [];
+    const items = photos
+      .map((p, idx) => {
+        const label = labels[idx] ? ` ${labels[idx]}` : '';
+        const cap = escapeHtml(p.caption || `${idx + 1}. Görsel`);
+        return `
+          <div class="task-popup-photo-item" data-zoom-idx="${idx}" title="${cap}">
+            <img src="${escapeHtml(p.src)}" alt="" draggable="false" />
+            <span class="popup-photo-badge">📷 #${idx + 1}${label}</span>
+            <span class="popup-zoom-hint-mini">🔍 Büyüt</span>
+            <div class="popup-photo-caption-mini">${cap}</div>
+          </div>`;
+      })
+      .join('');
+    return `<div class="task-popup-multi-photos${photos.length > 2 ? ' is-grid' : ''}">${items}</div>`;
+  }
+
+  function buildPinnedCardHtml(tm, photos) {
+    const chips = [];
+    if (tm.questItemName) {
+      chips.push(`<span class="popup-chip item">📦 Eşya: <strong>${escapeHtml(tm.questItemName)}</strong></span>`);
+    }
+    if (tm.requiredKeyName) {
+      chips.push(`<span class="popup-chip key">🔑 Anahtar: <strong>${escapeHtml(tm.requiredKeyName)}</strong></span>`);
+    }
+    if (tm.position && typeof tm.position.y === 'number') {
+      chips.push(`<span class="popup-chip dist">📍 Yükseklik: <strong>${tm.position.y.toFixed(1)}m</strong></span>`);
     }
 
-    if (inspectChips) {
-      const chips = [];
-      if (tm.questItemName) {
-        chips.push(`<div class="inspect-chip item">📦 Eşya: <strong>${tm.questItemName}</strong></div>`);
-      }
-      if (tm.requiredKeyName) {
-        chips.push(`<div class="inspect-chip key">🔑 Anahtar: <strong>${tm.requiredKeyName}</strong></div>`);
-      }
-      chips.push(`<div class="inspect-chip dist">📍 Yükseklik: <strong>${tm.position.y.toFixed(1)}m</strong></div>`);
-      inspectChips.innerHTML = chips.join('');
-    }
+    const safeName = escapeHtml(tm.taskName || '');
+    return `
+      <div class="tarkov-pinned-card">
+        <div class="pinned-card-header">
+          <div class="pinned-card-title">
+            <span class="pinned-card-trader">[${escapeHtml(tm.traderName || 'Trader')}]</span>
+            <strong class="pinned-card-name" title="${safeName}">${safeName}</strong>
+          </div>
+          <button type="button" class="btn-pinned-close" data-action="close" title="Kapat (Esc)">✕</button>
+        </div>
+        ${buildPhotosHtml(photos)}
+        <div class="pinned-card-body">
+          ${tm.description ? `<div class="pinned-card-desc">${escapeHtml(tm.description)}</div>` : ''}
+          ${chips.length > 0 ? `<div class="pinned-card-chips">${chips.join('')}</div>` : ''}
+          <div class="pinned-card-actions">
+            <button type="button" class="btn-pinned-route" data-action="route">🎯 Rotayı Bu Göreve Çiz</button>
+          </div>
+        </div>
+      </div>`;
+  }
 
-    if (btnInspectRoute) {
-      btnInspectRoute.onclick = () => {
+  function handlePinnedCardClick(e) {
+    if (!pinnedTask) return;
+    const tm = pinnedTask.tm;
+    const photos = pinnedTask.photos;
+
+    const actionEl = e.target.closest('[data-action]');
+    if (actionEl) {
+      L.DomEvent.stop(e);
+      const action = actionEl.getAttribute('data-action');
+      if (action === 'close') {
+        closePinnedTaskPopup();
+      } else if (action === 'route') {
         window.tarkovAPI.setTarget({
           id: tm.id,
           title: `Görev: ${tm.taskName}`,
@@ -1543,65 +1714,304 @@
           color: tm.isSelectedTask ? '#a855f7' : '#d97706',
           position: tm.position
         });
-      };
+        actionEl.textContent = '✓ Rota Çizildi!';
+        actionEl.classList.add('is-done');
+        setTimeout(() => {
+          if (actionEl.isConnected) {
+            actionEl.textContent = '🎯 Rotayı Bu Göreve Çiz';
+            actionEl.classList.remove('is-done');
+          }
+        }, 1800);
+      }
+      return;
     }
 
-    taskInspectCard.classList.remove('hidden');
+    const photoEl = e.target.closest('[data-zoom-idx]');
+    if (photoEl) {
+      L.DomEvent.stop(e);
+      const idx = parseInt(photoEl.getAttribute('data-zoom-idx'), 10) || 0;
+      openImageLightbox(photos, idx, tm.taskName || '');
+    }
   }
 
-  function closeTaskInspectCard() {
-    if (taskInspectCard) taskInspectCard.classList.add('hidden');
+  function openPinnedTaskPopup(tm, marker) {
+    if (!leafletMap || !tm || !tm.position) return;
+
+    // Önceki kartı sessizce kaldır (kilit açılıp kapanmasın)
+    detachActivePopup();
+    hideTaskHoverTooltip();
+
+    const photos = collectTaskPhotos(tm);
+    const latLng = marker ? marker.getLatLng() : L.latLng(window.TarkovGeo.gamePosToLatLngArray(tm.position));
+    pinnedTask = { tm, photos };
+    isTaskPinnedOpen = true;
+
+    const popup = L.popup({
+      className: 'tarkov-task-pinned-popup',
+      closeButton: false,
+      autoClose: false,
+      closeOnClick: false,
+      closeOnEscapeKey: false, // Esc'yi kendimiz yönetiyoruz (önce lightbox, sonra kart)
+      autoPan: true,
+      autoPanPadding: [8, 8],
+      offset: [0, -12],
+      maxWidth: 320,
+      minWidth: 260
+    })
+      .setLatLng(latLng)
+      .setContent(buildPinnedCardHtml(tm, photos));
+
+    // Kart herhangi bir nedenle haritadan kalkarsa (harita değişimi vb.) durumu senkronla
+    popup.on('remove', () => {
+      if (activeTaskPopup !== popup) return;
+      activeTaskPopup = null;
+      pinnedTask = null;
+      isTaskPinnedOpen = false;
+      updateHoverInteractivity();
+    });
+
+    activeTaskPopup = popup;
+    popup.openOn(leafletMap);
+
+    const el = popup.getElement();
+    if (el) {
+      L.DomEvent.disableClickPropagation(el);
+      L.DomEvent.disableScrollPropagation(el);
+      el.addEventListener('click', handlePinnedCardClick);
+    }
+
+    updateHoverInteractivity();
   }
 
-  if (btnInspectClose) btnInspectClose.addEventListener('click', closeTaskInspectCard);
+  // Popup'ı durum değiştirmeden kaldırır (yeniden açma / güncelleme için)
+  function detachActivePopup() {
+    if (!activeTaskPopup) return;
+    const p = activeTaskPopup;
+    activeTaskPopup = null; // 'remove' dinleyicisi tetiklenmesin
+    try {
+      p.remove();
+    } catch (_e) {}
+  }
 
-  // Görsel Büyütme Modal (Lightbox)
+  function closePinnedTaskPopup() {
+    detachActivePopup();
+    pinnedTask = null;
+    isTaskPinnedOpen = false;
+    updateHoverInteractivity();
+  }
+
+  // renderMarkers sonrası: sabit görev hâlâ haritadaysa kartı koru, yoksa kapat
+  function restorePinnedTaskAfterRender(taskMarkers) {
+    if (!pinnedTask) return;
+    const fresh = (taskMarkers || []).find((m) => m.id === pinnedTask.tm.id && m.position);
+    if (!fresh) {
+      closePinnedTaskPopup();
+      return;
+    }
+    pinnedTask.tm = fresh;
+    if (!activeTaskPopup || !leafletMap.hasLayer(activeTaskPopup)) {
+      openPinnedTaskPopup(fresh, null);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Görsel Büyütme (Lightbox) - Çoklu Fotoğraf Gezintisi
+  // ---------------------------------------------------------------------------
   const lightboxModal = document.getElementById('image-lightbox-modal');
   const lightboxBackdrop = document.getElementById('lightbox-backdrop');
   const lightboxImg = document.getElementById('lightbox-img');
   const lightboxCaption = document.getElementById('lightbox-caption');
   const btnCloseLightbox = document.getElementById('btn-close-lightbox');
+  const btnLightboxPrev = document.getElementById('lightbox-prev');
+  const btnLightboxNext = document.getElementById('lightbox-next');
 
-  function openImageLightbox(src, caption = '') {
-    if (!lightboxModal || !src) return;
-    lightboxImg.src = src;
+  let currentLightboxPhotos = [];
+  let currentLightboxIndex = 0;
+  let currentLightboxTitle = '';
+  let lightboxInWindow = false; // true: fotoğraf ayrı, ekran ortasındaki pencerede gösteriliyor
+
+  function renderLightboxCurrentPhoto() {
+    if (currentLightboxPhotos.length === 0) return;
+    const cur = currentLightboxPhotos[currentLightboxIndex] || {};
+    if (lightboxImg) lightboxImg.src = cur.src || cur.localPath || '';
+
     if (lightboxCaption) {
-      lightboxCaption.textContent = caption;
-      lightboxCaption.style.display = caption ? 'block' : 'none';
+      const total = currentLightboxPhotos.length;
+      const parts = [];
+      if (total > 1) parts.push(`📷 ${currentLightboxIndex + 1}/${total}`);
+      if (currentLightboxTitle) parts.push(currentLightboxTitle);
+      if (cur.caption) parts.push(cur.caption);
+      lightboxCaption.textContent = parts.join(' • ');
+      lightboxCaption.style.display = parts.length ? 'block' : 'none';
     }
+
+    const showNav = currentLightboxPhotos.length > 1;
+    if (btnLightboxPrev) btnLightboxPrev.style.display = showNav ? 'flex' : 'none';
+    if (btnLightboxNext) btnLightboxNext.style.display = showNav ? 'flex' : 'none';
+  }
+
+  function prevLightboxPhoto() {
+    if (currentLightboxPhotos.length <= 1) return;
+    currentLightboxIndex = (currentLightboxIndex - 1 + currentLightboxPhotos.length) % currentLightboxPhotos.length;
+    renderLightboxCurrentPhoto();
+  }
+
+  function nextLightboxPhoto() {
+    if (currentLightboxPhotos.length <= 1) return;
+    currentLightboxIndex = (currentLightboxIndex + 1) % currentLightboxPhotos.length;
+    renderLightboxCurrentPhoto();
+  }
+
+  /**
+   * openImageLightbox(photos[], index, title)  -> görev fotoğrafları arasında gezinti
+   * openImageLightbox('src', 'caption')        -> tek görsel (geriye dönük uyumluluk)
+   */
+  function openImageLightbox(photosOrSrc, indexOrCaption = 0, title = '') {
+    if (!lightboxModal) return;
+
+    if (Array.isArray(photosOrSrc)) {
+      currentLightboxPhotos = photosOrSrc.filter((p) => p && (p.src || p.localPath));
+      const idx = typeof indexOrCaption === 'number' ? indexOrCaption : 0;
+      currentLightboxIndex = idx >= 0 && idx < currentLightboxPhotos.length ? idx : 0;
+      currentLightboxTitle = title || '';
+    } else if (photosOrSrc) {
+      currentLightboxPhotos = [{ src: photosOrSrc, caption: typeof indexOrCaption === 'string' ? indexOrCaption : '' }];
+      currentLightboxIndex = 0;
+      currentLightboxTitle = '';
+    } else {
+      return;
+    }
+    if (currentLightboxPhotos.length === 0) return;
+
+    hideTaskHoverTooltip();
+    isLightboxOpen = true;
+    updateHoverInteractivity(); // kilidi lightbox açılmadan ÖNCE uygula
+
+    // Tercih edilen yol: fotoğraf ekranın ortasında, ayrı tam ekran pencerede açılır
+    if (window.tarkovAPI.openLightboxWindow) {
+      lightboxInWindow = true;
+      window.tarkovAPI
+        .openLightboxWindow({
+          photos: currentLightboxPhotos.map((p) => ({ src: p.src || p.localPath, caption: p.caption || '' })),
+          index: currentLightboxIndex,
+          title: currentLightboxTitle
+        })
+        .then((res) => {
+          // Ana süreç açamadıysa overlay içi modala geri dön
+          if (!res || !res.ok) {
+            lightboxInWindow = false;
+            showInlineLightbox();
+          }
+        })
+        .catch(() => {
+          lightboxInWindow = false;
+          showInlineLightbox();
+        });
+      return;
+    }
+
+    lightboxInWindow = false;
+    showInlineLightbox();
+  }
+
+  function showInlineLightbox() {
+    if (!isLightboxOpen) return;
+    renderLightboxCurrentPhoto();
     lightboxModal.classList.remove('hidden');
   }
 
-  function closeImageLightbox() {
-    if (!lightboxModal) return;
+  // fromMain=true: ekran ortasındaki pencere zaten kapandı, ana sürece tekrar bildirme
+  function closeImageLightbox(fromMain = false) {
+    if (!lightboxModal || !isLightboxOpen) return;
+    if (lightboxInWindow && !fromMain && window.tarkovAPI.closeLightboxWindow) {
+      window.tarkovAPI.closeLightboxWindow();
+    }
+    lightboxInWindow = false;
     lightboxModal.classList.add('hidden');
-    if (lightboxImg) lightboxImg.src = '';
+    if (lightboxImg) lightboxImg.removeAttribute('src');
+    isLightboxOpen = false;
+    currentLightboxPhotos = [];
+    currentLightboxIndex = 0;
+    currentLightboxTitle = '';
+    updateHoverInteractivity(); // görev kartı hâlâ açıksa kilit korunur
   }
 
   window.openImageLightbox = openImageLightbox;
   window.closeImageLightbox = closeImageLightbox;
+  window.openPinnedTaskPopup = openPinnedTaskPopup;
+  window.closePinnedTaskPopup = closePinnedTaskPopup;
 
-  if (btnCloseLightbox) btnCloseLightbox.addEventListener('click', closeImageLightbox);
-  if (lightboxBackdrop) lightboxBackdrop.addEventListener('click', closeImageLightbox);
+  function stopAndRun(fn) {
+    return (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      fn();
+    };
+  }
+
+  if (btnCloseLightbox) btnCloseLightbox.addEventListener('click', stopAndRun(() => closeImageLightbox()));
+  if (lightboxBackdrop) lightboxBackdrop.addEventListener('click', stopAndRun(() => closeImageLightbox()));
+  if (btnLightboxPrev) btnLightboxPrev.addEventListener('click', stopAndRun(prevLightboxPhoto));
+  if (btnLightboxNext) btnLightboxNext.addEventListener('click', stopAndRun(nextLightboxPhoto));
+  // Görselin kendisine tıklamak modalı kapatmasın; fare tekerleği ile gezinti
+  if (lightboxImg) lightboxImg.addEventListener('click', (e) => e.stopPropagation());
+  if (lightboxModal) {
+    lightboxModal.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        if (e.deltaY > 0) nextLightboxPhoto();
+        else if (e.deltaY < 0) prevLightboxPhoto();
+      },
+      { passive: false }
+    );
+  }
+
+  // Esc: önce lightbox, sonra sabit görev kartı. ←/→: lightbox gezintisi.
+  function handleOverlayKeyAction(action) {
+    if (action === 'lightboxClosed') {
+      closeImageLightbox(true); // görev kartı açıksa açık kalır
+    } else if (action === 'closeAll') {
+      closeImageLightbox();
+      closePinnedTaskPopup();
+    } else if (action === 'escape') {
+      if (isLightboxOpen) closeImageLightbox();
+      else if (isTaskPinnedOpen) closePinnedTaskPopup();
+    } else if (action === 'prev') {
+      if (isLightboxOpen) prevLightboxPhoto();
+    } else if (action === 'next') {
+      if (isLightboxOpen) nextLightboxPhoto();
+    }
+  }
+
+  // Overlay odaklanabilir değilken (oyun modu) tuşlar ana süreçteki geçici global kısayollardan gelir
+  if (window.tarkovAPI.onOverlayKeyAction) {
+    window.tarkovAPI.onOverlayKeyAction(handleOverlayKeyAction);
+  }
+
+  // Düzenleme modunda pencere odaklanabilir; tuşlar doğrudan buraya gelir
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (lightboxModal && !lightboxModal.classList.contains('hidden')) {
-        closeImageLightbox();
-      } else if (taskInspectCard && !taskInspectCard.classList.contains('hidden')) {
-        closeTaskInspectCard();
+      if (isLightboxOpen || isTaskPinnedOpen) {
+        e.preventDefault();
+        handleOverlayKeyAction('escape');
       }
+    } else if (isLightboxOpen && e.key === 'ArrowLeft') {
+      e.preventDefault();
+      handleOverlayKeyAction('prev');
+    } else if (isLightboxOpen && e.key === 'ArrowRight') {
+      e.preventDefault();
+      handleOverlayKeyAction('next');
     }
   });
 
-  // Delegated Click: Tooltip içindeki ya da sayfadaki tüm büyütülebilir görsellere tıklama
+  // Delegated Click: Sayfadaki herhangi bir [data-zoom-src] görsele tıklama
   document.addEventListener('click', (e) => {
     const zoomTarget = e.target.closest('[data-zoom-src]');
     if (zoomTarget) {
       e.stopPropagation();
       e.preventDefault();
-      const src = zoomTarget.getAttribute('data-zoom-src');
-      const caption = zoomTarget.getAttribute('data-zoom-caption') || '';
-      openImageLightbox(src, caption);
+      openImageLightbox(zoomTarget.getAttribute('data-zoom-src'), zoomTarget.getAttribute('data-zoom-caption') || '');
     }
   });
 })();

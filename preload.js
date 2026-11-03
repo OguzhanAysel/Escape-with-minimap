@@ -33,6 +33,31 @@ contextBridge.exposeInMainWorld('tarkovAPI', {
 
   // Fare Üzerine Gelince Harita Etkileşimi
   setHoverInteractive: (interactive) => ipcRenderer.invoke('overlay:setHoverInteractive', interactive),
+  // Sabit görev kartı / lightbox açıkken overlay etkileşimini kilitler (+ geçici Esc/←/→ kısayolları)
+  setInteractionLock: (payload) => ipcRenderer.invoke('overlay:setInteractionLock', payload),
+  // Ekran ortasında görsel büyütme penceresi (Lightbox)
+  openLightboxWindow: (payload) => ipcRenderer.invoke('lightbox:open', payload),
+  closeLightboxWindow: () => ipcRenderer.invoke('lightbox:close'),
+  onLightboxShow: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('lightbox:show', listener);
+    return () => ipcRenderer.removeListener('lightbox:show', listener);
+  },
+  onLightboxHide: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('lightbox:hide', listener);
+    return () => ipcRenderer.removeListener('lightbox:hide', listener);
+  },
+  onLightboxNav: (callback) => {
+    const listener = (_event, action) => callback(action);
+    ipcRenderer.on('lightbox:nav', listener);
+    return () => ipcRenderer.removeListener('lightbox:nav', listener);
+  },
+  onOverlayKeyAction: (callback) => {
+    const listener = (_event, action) => callback(action);
+    ipcRenderer.on('overlay:keyAction', listener);
+    return () => ipcRenderer.removeListener('overlay:keyAction', listener);
+  },
 
   // Aşama 5: Görevler & OCR & Görev Eşyalarını Pinleme
   getTasks: () => ipcRenderer.invoke('api:getTasks'),
